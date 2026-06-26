@@ -14,7 +14,12 @@ Modules land here as PRs merge:
 - PR 7: viz (entropy heatmap, parallel-vs-AR coherence)
 """
 
-# Re-exports added as PRs land:
-# from ch04.action_tokenizer import ActionTokenizer
+from ch04.action_tokenizer import ActionTokenizer
 
-__all__: list[str] = []
+# Re-exports added as PRs land:
+# from ch04.parallel_action_head import ParallelActionHead  # PR 2
+# from ch04.autoregressive_action_head import (  # PR 3
+#     AutoregressiveActionHead,
+# )
+
+__all__: list[str] = ["ActionTokenizer"]
