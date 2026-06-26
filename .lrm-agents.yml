@@ -1,0 +1,16 @@
+# lrm-code-agents config overrides for chapter 4
+# See https://github.com/Large-Robotics-Models-From-Scratch/lrm-code-agents
+
+style:
+  max_line_length: 76
+
+chapters:
+  current: 4
+
+chapter_continuity:
+  tone_percent: 50
+  ch2_repo_path: "../lrm-code-chapter-2"
+  ch3_repo_path: "../lrm-code-chapter-3"
+
+reminders:
+  percent: 50  # remind at module/folder/chapter milestones, not every script
