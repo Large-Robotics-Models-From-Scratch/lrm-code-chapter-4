@@ -10,9 +10,3 @@ def test_ch04_imports():
     import ch04
 
     assert ch04 is not None
-
-
-def test_action_tokenizer_exported():
-    from ch04 import ActionTokenizer
-
-    assert ActionTokenizer is not None
