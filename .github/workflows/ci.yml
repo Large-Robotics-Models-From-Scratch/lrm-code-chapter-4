@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      # GitHub Actions runners ship with ~25 GB of pre-installed SDKs
+      # (Android, .NET, Haskell, GHC) we don't need. Freeing them up
+      # front gives us room for the torch + CUDA wheels lerobot pulls
+      # (~4 GB) without resolver gymnastics. Runs in under a minute.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dev + data deps
+        run: pip install -e ".[dev,data]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Unit tests (skip integration)
+        run: pytest -m "not integration" -v

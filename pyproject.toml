@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lrm-ch04"
+version = "0.1.0"
+description = "Chapter 4 code for 'Build a Large Robot Model (From Scratch)' (Manning): discrete behavior cloning — action tokenizer + parallel baseline head + autoregressive action head on the Chapter 3 unified-embedding backbone"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Vatsal Chanana" },
+    { name = "Siddharth Singh" },
+    { name = "Krishnam Gupta" },
+]
+# Exact pins throughout: this is a teaching repo — reproducing the
+# book's environment beats dependency flexibility. The pin set was
+# verified end-to-end in docs/decisions/000-environment-pins.md.
+dependencies = [
+    "torch==2.10.0",
+    "transformers==5.3.0",
+    "numpy==2.2.6",
+    "matplotlib>=3.7,<4.0",
+]
+
+[project.optional-dependencies]
+# Dataset stack: lerobot 0.5.1 for the SO-101 dataset. lerobot needs
+# huggingface-hub 1.x, which is why transformers is on the 5.x line
+# above (4.x hard-fails at import with hub 1.x — see ADR 000).
+data = [
+    "lerobot==0.5.1",
+    "huggingface-hub==1.23.0",
+]
+# Simulator stack for closed-loop eval on PickCubeSO100-v1.
+# gymnasium 1.3.0 satisfies both lerobot and mani-skill.
+sim = [
+    "mani-skill==3.0.1",
+    "gymnasium==1.3.0",
+]
+# Chapter 3 backbone: NOT a pip dependency on purpose. lrm-ch03's own
+# pyproject still pins transformers<5.0, which conflicts with the pin
+# set above; install it with --no-deps as documented in README Setup.
+# Developer tooling.
+dev = [
+    "pytest>=7.4",
+    "pytest-cov",
+    "ruff",
+    "jupyter",
+    "nbconvert",
+    "nbstripout",
+    "pre-commit",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 76
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests requiring full pipeline (HuggingFace model downloads, lerobot dataloader, Chapter 3 backbone). Deselect with -m 'not integration'.",
+    "slow: tests that take >10s (e.g., real backbone forward pass on CPU).",
+]
