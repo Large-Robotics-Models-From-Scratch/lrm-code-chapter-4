@@ -291,3 +291,21 @@ def test_load_config(name, microbatch, total, warmup, bf16):
     assert cfg.total_steps == total
     assert cfg.warmup_steps == warmup
     assert cfg.bf16 is bf16
+
+
+def test_load_config_demo_has_episode_subset():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    cfg = load_config(str(root / "configs/demo.yaml"))
+    assert cfg.episodes == list(range(10))
+
+
+def test_load_config_rejects_unknown_key(tmp_path):
+    """A typo'd key must raise (naming it), not silently fall back to
+    the default and poison a locked-recipe run."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("microbatch_size: 8\ntotal_steps: 800\n")
+
+    with pytest.raises(ValueError, match="microbatch_size"):
+        load_config(str(bad))

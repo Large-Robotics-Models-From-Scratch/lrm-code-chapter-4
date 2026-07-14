@@ -133,6 +133,10 @@ class TrainConfig:
     bf16: bool = True
     log_every: int = 50
     out_dir: str = "checkpoints"
+    # Episode subset for the dataset builder (None = all episodes).
+    # The demo config trains on a handful of episodes so a smoke run
+    # finishes quickly; the full recipe leaves this None.
+    episodes: list[int] | None = None
 
 
 @contextmanager
@@ -367,11 +371,22 @@ def load_checkpoint(path, head, fusion):
 
 
 def load_config(path):
-    """Load a YAML config into a ``TrainConfig`` (extra keys ignored)."""
+    """Load a YAML config into a ``TrainConfig`` (strict keys).
+
+    Unknown keys raise rather than being silently dropped: a typo'd
+    key (say ``microbatch_size:``) would otherwise fall back to the
+    default and quietly poison a locked-recipe run.
+    """
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     fields = {f.name for f in dataclasses.fields(TrainConfig)}
-    return TrainConfig(**{k: v for k, v in data.items() if k in fields})
+    unknown = sorted(set(data) - fields)
+    if unknown:
+        raise ValueError(
+            f"unknown config key(s) {unknown} in {path}; "
+            f"valid keys: {sorted(fields)}"
+        )
+    return TrainConfig(**data)
 
 
 def main(argv=None):
@@ -389,7 +404,6 @@ def main(argv=None):
 
     from ch03 import UnifiedEmbeddingBackbone
 
-    from ch04 import ACT_TOKEN_BASE, N_BINS
     from ch04.action_tokenizer import ActionTokenizer
     from ch04.autoregressive_action_head import (
         AutoregressiveActionHead,
@@ -400,7 +414,7 @@ def main(argv=None):
     backbone = UnifiedEmbeddingBackbone().float()
     fusion = FusionAdapter(backbone)
     head = AutoregressiveActionHead(fusion)
-    dataset = make_chunk_dataset()
+    dataset = make_chunk_dataset(episodes=cfg.episodes)
     tokenizer = ActionTokenizer.from_lerobot_stats(dataset.meta.stats)
     loader = make_chunk_loader(dataset, batch_size=cfg.microbatch)
 
@@ -408,7 +422,6 @@ def main(argv=None):
         "cuda" if torch.cuda.is_available() else "cpu"
     )
     head.to(device)
-    _ = (N_BINS, ACT_TOKEN_BASE)  # documented recipe constants
     return train(head, fusion, tokenizer, loader, cfg)
 
 

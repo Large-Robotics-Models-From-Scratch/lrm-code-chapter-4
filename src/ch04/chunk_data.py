@@ -61,6 +61,7 @@ def chunk_delta_timestamps(
 def make_chunk_dataset(
     repo_id: str = "lerobot/svla_so101_pickplace",
     chunk_h: int = CHUNK_H,
+    episodes: list[int] | None = None,
 ) -> LeRobotDataset:
     """``LeRobotDataset`` with delta_timestamps derived from its fps.
 
@@ -73,10 +74,19 @@ def make_chunk_dataset(
     data); we deliberately skip it: both constructions here share the
     local cache (seconds, once downloaded), and one class plus one
     import keeps the teaching surface smaller.
+
+    ``episodes`` (optional) restricts loading to a subset of episode
+    indices via lerobot's own ``episodes`` kwarg, so a demo run
+    (``configs/demo.yaml``) touches a handful of episodes instead of
+    the full dataset. ``None`` (default) loads everything.
     """
-    probe = LeRobotDataset(repo_id)
+    probe = LeRobotDataset(repo_id, episodes=episodes)
     delta_timestamps = chunk_delta_timestamps(probe.fps, chunk_h)
-    return LeRobotDataset(repo_id, delta_timestamps=delta_timestamps)
+    return LeRobotDataset(
+        repo_id,
+        delta_timestamps=delta_timestamps,
+        episodes=episodes,
+    )
 
 
 def make_chunk_loader(

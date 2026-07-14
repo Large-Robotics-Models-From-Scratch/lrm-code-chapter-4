@@ -40,6 +40,44 @@ def test_chunk_delta_timestamps_default_chunk_h():
     assert len(dt["action"]) == CHUNK_H
 
 
+def test_make_chunk_dataset_passes_episodes(monkeypatch):
+    """``episodes`` reaches both LeRobotDataset constructions.
+
+    Unit-level (no network): a recording fake stands in for
+    ``LeRobotDataset`` and captures the ``episodes`` kwarg from both the
+    fps-probe construction and the chunked one.
+    """
+    import ch04.chunk_data as chunk_data
+
+    calls = []
+
+    class _FakeDataset:
+        def __init__(self, repo_id, delta_timestamps=None, episodes=None):
+            calls.append(episodes)
+            self.fps = 30
+
+    monkeypatch.setattr(chunk_data, "LeRobotDataset", _FakeDataset)
+    chunk_data.make_chunk_dataset(episodes=[0, 1])
+
+    assert calls == [[0, 1], [0, 1]]
+
+
+def test_make_chunk_dataset_episodes_defaults_to_none(monkeypatch):
+    import ch04.chunk_data as chunk_data
+
+    calls = []
+
+    class _FakeDataset:
+        def __init__(self, repo_id, delta_timestamps=None, episodes=None):
+            calls.append(episodes)
+            self.fps = 30
+
+    monkeypatch.setattr(chunk_data, "LeRobotDataset", _FakeDataset)
+    chunk_data.make_chunk_dataset()
+
+    assert calls == [None, None]
+
+
 def test_prepare_images_shape_and_range():
     batch = {
         "observation.images.up": torch.full(
@@ -85,8 +123,9 @@ def test_integration_real_dataset_chunked_batch():
     ``*_is_pad`` too. ``action_is_pad`` has shape ``[B, CHUNK_H]`` and
     is ``True`` at steps lerobot clamped to an episode boundary.
     """
-    ds = make_chunk_dataset()
+    ds = make_chunk_dataset(episodes=[0, 1])
     assert ds.fps == 30  # the real dataset rate, not the book's 50
+    assert ds.num_episodes == 2  # episode subset passthrough
     assert len(ds.delta_timestamps["action"]) == CHUNK_H
     assert ds.delta_timestamps["action"][-1] == pytest.approx(
         15 / 30
