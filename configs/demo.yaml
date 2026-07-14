@@ -1,0 +1,16 @@
+# Demo training config -- a fast smoke run.
+#
+# Small step budget and microbatch so a laptop or a single modest GPU
+# can finish it; fp16 autocast on CUDA (bf16 false), no-op on CPU. Point
+# the dataset builder at an episode subset (a handful of episodes) so the
+# loader spins up quickly. This is NOT the shipped recipe -- see
+# configs/full.yaml for Table 4.3.
+n_epochs: 4
+microbatch: 8
+grad_accum: 1
+total_steps: 800
+warmup_steps: 100
+steps_per_checkpoint: 400
+bf16: false
+log_every: 50
+out_dir: checkpoints/demo

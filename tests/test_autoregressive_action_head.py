@@ -133,6 +133,35 @@ def test_token_mapping_shift_right_with_bos():
     assert torch.equal(captured["ids"], expected)
 
 
+def test_pad_mask_ignores_masked_positions():
+    """A masked (padded) target must not affect the loss.
+
+    lerobot repeats the last action past an episode boundary and flags
+    those steps in ``action_is_pad``; the head drops them from the CE
+    mean. We corrupt the *last* target position -- teacher forcing
+    shifts the input right and drops the last target, so changing it
+    touches no logits -- and mask that position: the loss must be
+    identical to the uncorrupted run, and differ from an unmasked run.
+    """
+    torch.manual_seed(0)
+    head = _head()
+    prefix = _prefix()
+    targets = torch.randint(0, N_BINS, (BATCH, HORIZON))
+
+    mask = torch.zeros(BATCH, HORIZON, dtype=torch.bool)
+    mask[:, -1] = True  # mark the last position as padding
+
+    corrupted = targets.clone()
+    corrupted[:, -1] = (targets[:, -1] + 1) % N_BINS
+
+    masked_clean = head(prefix, targets, pad_mask=mask)
+    masked_corrupt = head(prefix, corrupted, pad_mask=mask)
+    assert torch.allclose(masked_clean, masked_corrupt, atol=1e-6)
+
+    unmasked = head(prefix, targets)
+    assert not torch.allclose(masked_clean, unmasked)
+
+
 def test_out_of_range_targets_raise():
     head = _head()
     prefix = _prefix()

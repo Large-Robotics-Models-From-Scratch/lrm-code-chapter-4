@@ -78,17 +78,34 @@ class AutoregressiveActionHead(nn.Module):
         # backbone); the loss upcasts (see forward).
         return self.readout(hidden[:, -horizon:, :])
 
-    def forward(self, prefix, target_bins):
-        """Teacher-forced cross-entropy loss (scalar)."""
+    def forward(self, prefix, target_bins, pad_mask=None):
+        """Teacher-forced cross-entropy loss (scalar).
+
+        ``pad_mask`` (optional, ``[B, T]`` bool, ``True`` == ignore)
+        handles lerobot's episode-boundary padding: chunks that run
+        past an episode's end repeat the last action and flag those
+        steps in ``action_is_pad`` (SS4.6). Training on the repeated
+        rows teaches the policy to freeze at episode end, so the caller
+        expands the ``[B, H]`` frame mask to token level
+        (``repeat_interleave`` by ``action_dim`` in ``train.py``) and
+        passes it here; masked positions are dropped from the mean (CE
+        with ``reduction="none"``, zeroed, divided by the unmasked
+        count). Default ``None`` keeps the original unmasked behavior.
+        """
         logits = self.logits(prefix, target_bins)
         # bf16 gotcha: cast logits to float32 before cross_entropy. On
         # the real backbone hidden (hence logits) is bf16, whose
         # softmax is too coarse at the ~log(256) scale; float32 CE is
         # standard practice and keeps the loss stable and comparable.
-        return F.cross_entropy(
-            logits.reshape(-1, self.n_bins).float(),
-            target_bins.reshape(-1),
+        flat_logits = logits.reshape(-1, self.n_bins).float()
+        flat_targets = target_bins.reshape(-1)
+        if pad_mask is None:
+            return F.cross_entropy(flat_logits, flat_targets)
+        ce = F.cross_entropy(
+            flat_logits, flat_targets, reduction="none"
         )
+        keep = (~pad_mask.reshape(-1)).to(ce.dtype)
+        return (ce * keep).sum() / keep.sum().clamp(min=1.0)
 
     def _validate(self, target_bins) -> None:
         if torch.is_floating_point(target_bins) or (

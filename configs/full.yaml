@@ -1,0 +1,16 @@
+# Full training config -- the shipped recipe (manuscript Table 4.3).
+#
+# 20k optimizer steps, microbatch 16 with 2x gradient accumulation
+# (effective batch 32), bf16 autocast on an A100/H100 (falls back to
+# fp16 + GradScaler on older CUDA, no-op on CPU). 500-step linear warmup
+# then cosine decay to zero. Backbone frozen for epoch 0, then unfrozen
+# at 1e-5 (see ch04.train.unfreeze_backbone).
+n_epochs: 4
+microbatch: 16
+grad_accum: 2
+total_steps: 20000
+warmup_steps: 500
+steps_per_checkpoint: 5000
+bf16: true
+log_every: 50
+out_dir: checkpoints/full

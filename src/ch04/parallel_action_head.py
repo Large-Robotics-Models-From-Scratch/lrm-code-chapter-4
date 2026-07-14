@@ -124,6 +124,7 @@ class ParallelActionHead(nn.Module):
         pooled: torch.Tensor,
         target_bins: torch.Tensor,
         label_smoothing_eps: float = 0.0,
+        pad_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Cross-entropy on ``[B, H, D]`` int64 targets.
 
@@ -134,18 +135,35 @@ class ParallelActionHead(nn.Module):
         computes ``-(soft * log_softmax(logits)).sum(-1).mean()`` by
         hand, since ``F.cross_entropy`` only accepts hard class
         indices.
+
+        ``pad_mask`` (optional, ``[B, H]`` bool, ``True`` == ignore)
+        handles lerobot's episode-boundary padding: chunks that run
+        past an episode's end repeat the last action and flag those
+        steps in ``action_is_pad`` (SS4.6). Training on the repeated
+        rows teaches the policy to freeze at episode end, so a padded
+        timestep is dropped from the mean (its full ``[B, H, D]`` row
+        of positions is zeroed, then divided by the unmasked count).
+        Default ``None`` keeps the original unmasked behavior.
         """
         logits = self(pooled)  # [B, H, D, n_bins]
         if label_smoothing_eps == 0.0:
-            return F.cross_entropy(
+            per = F.cross_entropy(
                 logits.reshape(-1, self.n_bins),
                 target_bins.reshape(-1),
+                reduction="none",
+            ).view(*target_bins.shape)  # [B, H, D]
+        else:
+            soft = adjacent_bin_targets(
+                target_bins, self.n_bins, label_smoothing_eps
             )
-        soft = adjacent_bin_targets(
-            target_bins, self.n_bins, label_smoothing_eps
-        )
-        log_probs = torch.log_softmax(logits, dim=-1)
-        return -(soft * log_probs).sum(dim=-1).mean()
+            log_probs = torch.log_softmax(logits, dim=-1)
+            per = -(soft * log_probs).sum(dim=-1)  # [B, H, D]
+        if pad_mask is None:
+            return per.mean()
+        keep = (~pad_mask).unsqueeze(-1).to(per.dtype)  # [B, H, 1]
+        return (per * keep).sum() / keep.expand_as(
+            per
+        ).sum().clamp(min=1.0)
 
     def sample(
         self, pooled: torch.Tensor, temperature: float = 1.0

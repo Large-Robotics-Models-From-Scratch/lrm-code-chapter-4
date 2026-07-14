@@ -118,6 +118,35 @@ def test_smoothed_loss_with_zero_eps_matches_plain_ce():
     assert torch.allclose(plain, manual, atol=1e-5)
 
 
+def test_pad_mask_ignores_masked_timestep():
+    """A masked (padded) timestep must not affect the loss.
+
+    lerobot repeats the last action past an episode boundary and flags
+    those steps in ``action_is_pad``; the head drops the whole
+    ``[B, H, D]`` row for a padded timestep. Because this head scores
+    every position independently (no teacher forcing), corrupting a
+    masked timestep's targets must leave the loss unchanged, and differ
+    from an unmasked run.
+    """
+    torch.manual_seed(0)
+    head = ParallelActionHead()
+    pooled = torch.randn(BATCH, D_EMBED)
+    targets = torch.randint(0, N_BINS, (BATCH, CHUNK_H, ACTION_DIM))
+
+    mask = torch.zeros(BATCH, CHUNK_H, dtype=torch.bool)
+    mask[:, -1] = True  # last timestep is padding
+
+    corrupted = targets.clone()
+    corrupted[:, -1] = (targets[:, -1] + 1) % N_BINS
+
+    masked_clean = head.loss(pooled, targets, pad_mask=mask)
+    masked_corrupt = head.loss(pooled, corrupted, pad_mask=mask)
+    assert torch.allclose(masked_clean, masked_corrupt, atol=1e-6)
+
+    unmasked = head.loss(pooled, targets)
+    assert not torch.allclose(masked_clean, unmasked)
+
+
 def test_sample_shape_dtype_and_range():
     torch.manual_seed(0)
     head = ParallelActionHead()
