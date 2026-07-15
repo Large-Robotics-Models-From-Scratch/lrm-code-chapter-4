@@ -1,0 +1,5 @@
+# Generated figures live here. Synthetic placeholders are
+# regenerable via scripts/make_figures.py; real figures come from
+# Task 11 checkpoint. Keep the dir tracked, ignore the PNGs.
+*.png
+!.gitkeep
