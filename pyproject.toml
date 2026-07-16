@@ -46,6 +46,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "jupyter",
+    "nbformat",
     "nbconvert",
     "nbstripout",
     "pre-commit",

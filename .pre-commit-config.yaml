@@ -3,6 +3,10 @@ repos:
     rev: 0.7.1
     hooks:
       - id: nbstripout
+        # Strip the working notebook, but keep committed outputs in the
+        # executed copy and the worked-solutions notebook (the "visible
+        # payoff" artifacts).
+        exclude: '(_executed\.ipynb$|solutions\.ipynb$)'
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9

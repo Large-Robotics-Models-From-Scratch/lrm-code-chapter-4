@@ -73,11 +73,37 @@ uv pip install --no-deps -e ../lrm-code-chapter-3
 uv pip install --no-deps "lrm-ch03 @ git+https://github.com/Large-Robotics-Models-From-Scratch/lrm-code-chapter-3.git@main"
 ```
 
-Then open the notebook (lands with the module PRs):
+Then open the end-to-end notebook (launch Jupyter from the repo root so
+the notebook finds `configs/` and `figures/`):
 
 ```bash
 jupyter lab notebooks/ch04.ipynb
 ```
+
+`notebooks/ch04_executed.ipynb` is the same notebook already run top to
+bottom on the real dataset and backbone, with outputs, loss/entropy
+curves, and figures committed — read it to see the payoff without
+running anything. On a CPU/MPS host the notebook runs a short *real*
+training smoke (a few dozen steps); the full 800-step demo and the
+closed-loop ManiSkill rollout are GPU/Colab paths (guarded by
+`RUN_FULL` / `RUN_SIM` flags). The demo recipe also runs standalone:
+
+```bash
+python -m ch04.train --config configs/demo.yaml   # ~800 steps, T4-safe
+```
+
+### Colab
+
+Open `notebooks/ch04.ipynb` in Colab; the first cell pip-installs this
+package (and ch3 with `--no-deps`), clones the repo for `configs/`, and
+prints a MODE banner confirming the GPU tier and that the real dataset
+and backbone loaded. There is no silent synthetic fallback.
+
+### Exercises
+
+`exercises/` has scaffolded stubs (focal loss, multimodal stress test,
+entropy diagnostic, k-means binning) and `exercises/solutions.ipynb`
+with worked answers.
 
 ### SO-100 vs SO-101
 
@@ -118,10 +144,40 @@ lrm-code-chapter-4/
 ├── .pre-commit-config.yaml
 ├── .github/workflows/ci.yml
 ├── src/ch04/
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── action_tokenizer.py
+│   ├── fusion_adapter.py
+│   ├── parallel_action_head.py
+│   ├── autoregressive_action_head.py
+│   ├── chunk_data.py
+│   ├── train.py
+│   ├── policy.py
+│   ├── rollout.py
+│   └── diagnostics.py
+├── configs/
+│   ├── demo.yaml
+│   └── full.yaml
+├── scripts/
+│   ├── build_notebook.py
+│   ├── toy_bimodal.py
+│   └── make_figures.py
+├── notebooks/
+│   ├── ch04.ipynb
+│   └── ch04_executed.ipynb
+├── exercises/
+│   ├── README.md
+│   ├── exercise_4_2_focal_loss.py
+│   ├── exercise_4_3_multimodal_stress.py
+│   ├── exercise_4_4_entropy_diagnostic.py
+│   ├── exercise_4_6_kmeans_binning.py
+│   └── solutions.ipynb
+├── figures/
+│   ├── .gitkeep
+│   └── .gitignore
 ├── agents/
 │   └── chapter-04-guide.md
 ├── docs/
+│   ├── manuscript_fixes.md
 │   ├── decisions/
 │   │   └── 000-environment-pins.md
 │   └── internal/
@@ -129,12 +185,29 @@ lrm-code-chapter-4/
 │       └── chapter_4_plan.md
 └── tests/
     ├── conftest.py
+    ├── fakes.py
     ├── test_smoke.py
     ├── test_guardrails.py
-    └── test_docs_sync.py
+    ├── test_docs_sync.py
+    ├── test_action_tokenizer.py
+    ├── test_fusion_adapter.py
+    ├── test_parallel_action_head.py
+    ├── test_autoregressive_action_head.py
+    ├── test_chunk_data.py
+    ├── test_train.py
+    ├── test_policy.py
+    ├── test_rollout.py
+    ├── test_diagnostics.py
+    └── test_toy_bimodal.py
 ```
 
-`src/ch04/` gains one module per PR (see the table above). `tests/test_docs_sync.py` keeps this block honest against `git ls-files`.
+The three-act arc lives in `src/ch04/` (tokenizer → heads → training →
+policy → rollout/diagnostics). `notebooks/ch04.ipynb` assembles them end
+to end; `notebooks/ch04_executed.ipynb` is that notebook run top to
+bottom on real data with outputs committed. `configs/` holds the demo
+and full training recipes; `exercises/` holds the exercise stubs and
+worked solutions. `tests/test_docs_sync.py` keeps this block honest
+against `git ls-files`.
 
 ## Locked architecture (Ch 4, on the Ch 3 v5 contract)
 
@@ -176,9 +249,31 @@ Chapter 4 reserves the **existing** top 256 ids for action tokens; it never resi
 - **Chapter 3 repo**: [`lrm-code-chapter-3`](https://github.com/Large-Robotics-Models-From-Scratch/lrm-code-chapter-3) — `from ch03 import UnifiedEmbeddingBackbone`
 - **Chapter 2 repo**: [`lrm-code-chapter-2`](https://github.com/Large-Robotics-Models-From-Scratch/lrm-code-chapter-2) — dataloader, normalization stats
 
-## Forward pointer
+## Hand-off to Chapter 5
 
-The autoregressive factorization here is also the on-ramp to **world action models**, an emerging LRM class that tokenizes future observations alongside actions. Ch 4 sets up that interface without building it.
+Chapter 5 replaces the discrete categorical head with continuous flow
+matching, motivated by the ceilings this chapter's policy makes
+measurable: quantization error (half a bin width), decode latency
+(`H·D` serial steps), and the discrete action space itself. Two
+artifacts carry over:
+
+- **Checkpoint format** — `ch04.train.save_checkpoint(path, head,
+  fusion, step)` writes `{"step", "head", "fusion"}`, where `head` is
+  the action head's own state dict and `fusion` is only the *trainable*
+  backbone modules (`img_proj`, `state_proj`, `embed_tokens`,
+  `language_backbone`); frozen SigLIP reloads from HuggingFace.
+  `load_checkpoint` restores both. Chapter 5 swaps the head and reuses
+  the fusion state.
+- **Tokenizer stats** — the tokenizer's per-dimension `q01`/`q99`
+  ranges (`tokenizer.lo` / `tokenizer.hi`, computed by
+  `ActionTokenizer.from_lerobot_dataset`) define the action
+  normalization Chapter 5's continuous head also needs.
+
+The autoregressive factorization `p(a | o) = ∏_t ∏_d p(a_{t,d} | o,
+a_{<(t,d)})` is also the on-ramp to **world action models**, an emerging
+LRM class that tokenizes future observations alongside actions; the
+decode loop stays generic enough for a future chapter to interleave
+observation tokens.
 
 ## License
 

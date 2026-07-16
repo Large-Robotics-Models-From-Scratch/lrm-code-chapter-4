@@ -2,6 +2,39 @@
 
 Cross-chapter decisions tracked here. Update with each significant architectural change. Maintained alongside the `lrm-code-agents/chapter-continuity` agent.
 
+## Update (ch4 v2, 2026-07): revert-and-rebuild on the v5 contract
+
+The first ch4 build targeted a stale ch3 draft (a `VLABackbone` with a
+512-dim single-camera output and a planned 1,536-id vocabulary
+expansion). When ch3 landed its v5 code on `main` (tip `deeead0`), that
+contract was gone. Rather than patch the divergence, ch4 was reverted to
+scaffold on `main` and rebuilt module-by-module on branch `ch4-v2-build`
+against the real v5 backbone. The corrections that rebuild encodes:
+
+- **Backbone** `VLABackbone` → `ch03.UnifiedEmbeddingBackbone`; hidden
+  width **512 → 576** (SmolLM2 native, no bridge projection); **single
+  camera → two** (`up` + `side`, 392 image tokens); fused output
+  `[B, 392 + L + 1, 576]` via `build_sequence_ids` / `sequence_ids`.
+- **Vocabulary** the "1,536 new ids + `resize_token_embeddings`" plan →
+  **256 shared reserved ids (48896–49151)**, no resize, no `add_tokens`
+  (OpenVLA recipe; position disambiguates the dimension).
+- **Fusion surface** the manuscript's `fusion.encode_prefix / embed /
+  forward` do not exist on the ch3 backbone → a composing
+  `FusionAdapter` (read-only, never mutates ch3) supplies them.
+- **Dataset reality** stats ship no `q01`/`q99` (percentiles computed
+  from the action column); 30 fps not 50 (offsets from `ds.fps`);
+  boundary chunks pad + emit `action_is_pad` (loss masks on it), lerobot
+  does **not** assert in-episode at load; `observation.state` arrives
+  `[B, 1, 6]` (squeeze before the backbone).
+- **Dtype** transformers 5.x loads SmolLM2 in bfloat16 → load the
+  backbone `.float()` and upcast logits before cross-entropy.
+
+Every discrepancy found during the rebuild is catalogued, with
+manuscript line refs, in `docs/manuscript_fixes.md` (12 items). The E2E
+notebook (`notebooks/ch04.ipynb` + the executed copy) exercises the whole
+stack on the real dataset and backbone — no synthetic fallback on the
+main path.
+
 ## Locked decisions inherited from earlier chapters
 
 | Decision | Set in | Notes |
