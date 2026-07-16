@@ -209,3 +209,31 @@ caveat in the text.
   `docs/EVAL_INCONSISTENCY.md`, which documents every mismatch and the
   author's decision (Option 1). A matched-domain closed-loop eval is
   deferred to the ch2/ch3 owners.
+
+## 14. [note] Weight decay 0.05 vs SmolVLA's ~0 — §4.6.1, Table 4.3
+
+- **Where:** Table 4.3 (recipe) and Listing 4.13: `weight_decay=0.05`.
+- **Observation:** LeRobot's official SmolVLA policy config sets
+  `optimizer_weight_decay = 1e-10` (effectively none), while betas
+  `(0.9, 0.95)` and head LR `1e-4` match ours exactly (validated against
+  `huggingface/lerobot` `policies/smolvla/configuration_smolvla.py`, see
+  `docs/HF_VALIDATION.md`). 0.05 is a standard AdamW value and not wrong,
+  but it is the single largest hyperparameter gap from the production
+  reference.
+- **Fix:** author decision — justify 0.05 in a sentence, or lower it
+  toward the SmolVLA setting. No code change made; Table 4.3 is the
+  source of truth the code follows.
+
+## 15. [note] Backbone freeze strategy differs from SmolVLA — §4.5.6
+
+- **Where:** §4.5.6 (freeze epoch 0, then unfreeze SmolLM at LR 1e-5).
+- **Observation:** SmolVLA **permanently** freezes the vision encoder
+  *and* the whole VLM (`freeze_vision_encoder=True`,
+  `train_expert_only=True`) and trains only a separate action expert.
+  Ours reuses SmolLM *as* the decoder (OpenVLA-style), so it must be
+  trained — hence freeze-then-unfreeze, which the manuscript's §4.5.6
+  PITFALL motivates. This is an architecture-driven difference, not an
+  error, but the contrast (production VLAs keep the VLM frozen behind a
+  separate expert) is worth a sentence so a reader who compares to
+  SmolVLA isn't confused. See `docs/HF_VALIDATION.md`.
+- **Fix:** author decision — add one clarifying sentence; no code change.

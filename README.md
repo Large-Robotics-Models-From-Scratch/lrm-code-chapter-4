@@ -210,6 +210,7 @@ lrm-code-chapter-4/
 ├── docs/
 │   ├── manuscript_fixes.md
 │   ├── EVAL_INCONSISTENCY.md
+│   ├── HF_VALIDATION.md
 │   ├── decisions/
 │   │   └── 000-environment-pins.md
 │   └── internal/
