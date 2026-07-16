@@ -6,6 +6,13 @@ nats as the head sharpens), the training-set bin-frequency histogram
 (a modal bin over 20% of tokens is the focal-loss trigger), and full
 softmax snapshots on canary states (the raw material for Figure 4.8).
 
+``plot_action_traces`` renders the open-loop qualitative eval:
+predicted vs ground-truth per-joint action traces on a held-out episode
+window (solid expert, dashed policy), the honest sim-free companion to
+``rollout.evaluate_open_loop``. ``open_loop_episode_predictions`` builds
+its ``(pred, true)`` arrays by decoding one chunk from a held-out
+observation.
+
 The three plotting functions render the chapter's evidence figures:
 
 * ``plot_convergence_ridges`` -- Figure 4.8: a categorical head learning
@@ -217,6 +224,123 @@ def plot_bimodal_comparison(mse_pred, cat_probs, centers, out_path):
     # Legend in the empty valley (lower center) so it never collides
     # with the annotation or either peak.
     ax.legend(fontsize=8, loc="lower center")
+    return _finish(fig, out_path)
+
+
+def open_loop_episode_predictions(policy, batch, index=0, horizon=None):
+    """Decode one chunk open-loop -> ``(pred [H, D], true [H, D])``.
+
+    The honest, sim-free "does the policy track the expert?" data prep
+    for ``plot_action_traces``. Take one held-out example (``index``)
+    from a chunked ``batch``, feed *its* ground-truth observation to the
+    policy, and let the policy decode a full action chunk; the ground
+    truth is that example's recorded ``action`` chunk. Both come back as
+    ``[H, D]`` (predicted vs expert), aligned step-for-step.
+
+    This is open-loop: the observation is the dataset's, not one the
+    policy's own actions produced, so it never compounds errors -- the
+    same optimism as ``rollout.evaluate_open_loop`` (which see). The
+    policy replays its decoded chunk from its buffer, so calling
+    ``select_action`` ``H`` times after a ``reset`` returns exactly the
+    one decoded chunk.
+
+    ``policy`` is any object with ``reset()`` / ``select_action(obs)``
+    (a ``DiscretePolicy``); ``horizon`` defaults to the chunk length
+    ``H`` from ``batch["action"]``.
+    """
+    action = np.asarray(batch["action"][index])  # [H, D]
+    if horizon is None:
+        horizon = action.shape[0]
+    obs = _single_env_obs(batch, index)
+    policy.reset()
+    pred = np.stack(
+        [np.asarray(policy.select_action(obs)) for _ in range(horizon)]
+    )
+    return pred, action[:horizon]
+
+
+def _single_env_obs(batch, index):
+    """Slice a chunked ``batch`` to a single-env ``encode_prefix`` obs.
+
+    Pull example ``index`` and add the leading ``B = 1`` axis the fusion
+    adapter expects: images ``[1, 3, H, W]``, state ``[1, 6]``, a
+    length-1 ``task`` list.
+    """
+    up = batch["observation.images.up"][index]  # [3, H, W]
+    side = batch["observation.images.side"][index]
+    state = batch["observation.state"][index]  # [1, 6] from [B, 1, 6]
+    if state.dim() == 1:  # tolerate an already-squeezed [6]
+        state = state.unsqueeze(0)
+    return {
+        "observation.images.up": up.unsqueeze(0),
+        "observation.images.side": side.unsqueeze(0),
+        "observation.state": state,
+        "task": [batch["task"][index]],
+    }
+
+
+def plot_action_traces(pred_chunks, true_chunks, out_path,
+                       joint_names=None):
+    """Open-loop trace figure: predicted vs ground-truth per joint.
+
+    ``pred_chunks`` / ``true_chunks`` are ``[T, D]`` arrays -- the
+    policy's decoded chunk actions and the dataset's actions over the
+    same held-out episode window. One subplot per joint in a grid draws
+    the expert (solid) against the policy (dashed) so the reader sees,
+    joint by joint, whether the head tracks the demonstrations on data it
+    never trained on. This is Chapter 4's honest qualitative eval:
+    open-loop, no simulator, no domain-mismatched success number.
+
+    Grayscale-safe by construction: both lines are black and are
+    distinguished by *style* (solid ground truth vs dashed prediction),
+    never by color. 300 dpi, Agg backend, returns ``out_path``.
+
+    ``joint_names`` (optional) labels each subplot; defaults to
+    ``joint 0 .. joint D-1``.
+    """
+    pred = np.asarray(pred_chunks, dtype=np.float64)
+    true = np.asarray(true_chunks, dtype=np.float64)
+    if pred.ndim != 2 or pred.shape != true.shape:
+        raise ValueError(
+            "pred_chunks and true_chunks must share shape [T, D]; got "
+            f"{pred.shape} and {true.shape}"
+        )
+    n_steps, dim = pred.shape
+    if joint_names is None:
+        joint_names = [f"joint {d}" for d in range(dim)]
+
+    n_cols = 2 if dim <= 4 else 3
+    n_rows = (dim + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(5.6, 1.7 * n_rows + 0.6),
+        squeeze=False, sharex=True,
+    )
+    flat = axes.reshape(-1)
+    steps = np.arange(n_steps)
+    for d in range(dim):
+        ax = flat[d]
+        ax.plot(
+            steps, true[:, d], color="black", linestyle="-",
+            linewidth=1.3, label="ground truth",
+        )
+        ax.plot(
+            steps, pred[:, d], color="black", linestyle="--",
+            linewidth=1.3, label="predicted",
+        )
+        ax.set_title(joint_names[d], fontsize=9)
+        ax.tick_params(labelsize=7)
+    for k in range(dim, len(flat)):
+        flat[k].axis("off")
+    # One shared legend (styles carry the distinction, not color).
+    handles, labels = flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="lower center", ncol=2, fontsize=8,
+    )
+    fig.suptitle(
+        "Open-loop action tracking on held-out data", fontsize=10
+    )
+    fig.supxlabel("chunk step", fontsize=8)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.97))
     return _finish(fig, out_path)
 
 

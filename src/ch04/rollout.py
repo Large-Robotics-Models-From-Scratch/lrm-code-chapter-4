@@ -1,16 +1,34 @@
-"""Closed-loop rollout evaluation on PickCubeSO100 (Listing 4.14).
+"""Evaluation: open-loop val loss (primary) + sim rollout (optional).
 
-Open-loop validation loss is a poor proxy for closed-loop success:
-loss can fall while success collapses, because open-loop feeds the
-policy ground-truth states and closed-loop feeds it its own (SS4.6.4).
-So we roll the policy out in the simulator and count task completions.
+Chapter 4 evaluates the discrete BC policy **open-loop** as its primary,
+honest metric, and treats the closed-loop ManiSkill rollout as an
+optional, domain-caveated extra. The reason is a train/eval domain
+mismatch, documented in full in ``docs/EVAL_INCONSISTENCY.md``: the
+policy is trained on the *real* ``svla_so101_pickplace`` dataset (SO-101,
+two cameras, absolute joint-target actions) but ``PickCubeSO100-v1`` is a
+different domain (SO-100, one camera, a delta-action controller). The
+absolute-vs-delta action-space gap alone breaks the rollout, so a low
+sim success rate would reflect that gap, not the discrete-BC method the
+chapter teaches. Until a matched-domain sim exists (a ch2/ch3 decision),
+open-loop is how we report results here.
 
-``evaluate`` runs the manuscript's rollout loop -- reset per seed,
-``policy.reset()``, step until termination or truncation, collect
-``info["success"]`` -- and returns the success rate plus the per-seed
-flags. ``maniskill_obs_adapter`` is the bridge from ManiSkill's rgb
-observation dict to the batch dict ``FusionAdapter.encode_prefix``
-wants.
+``evaluate_open_loop`` (primary) scores the head's teacher-forced,
+pad-masked cross-entropy on a **held-out** loader with no gradient. It
+mirrors the training loss exactly, but on data the policy never trained
+on. It is an *optimistic* proxy -- open-loop feeds the policy
+ground-truth states, so it never sees its own compounding errors (that
+is exactly what closed-loop would test) -- but it is a real, reproducible
+number, unlike the mismatched sim. Pair it with the trace figure
+(``diagnostics.plot_action_traces``) and the bimodal/coordination
+diagnostics (Figures 4.8-4.10) for the full open-loop story.
+
+``evaluate`` (optional) runs the manuscript's closed-loop rollout loop --
+reset per seed, ``policy.reset()``, step until termination or
+truncation, collect ``info["success"]`` -- and returns the success rate
+plus the per-seed flags. It is kept for a future matched-domain sim, not
+as a headline metric. ``maniskill_obs_adapter`` is the bridge from
+ManiSkill's rgb observation dict to the batch dict
+``FusionAdapter.encode_prefix`` wants.
 
 The obs mapping (verified against ManiSkill 3.0.1 `PickCubeSO100-v1`):
 
@@ -37,6 +55,132 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn.functional as F
+
+
+def evaluate_open_loop(
+    head,
+    fusion,
+    tokenizer,
+    loader,
+    n_batches=None,
+    device="cpu",
+):
+    """Held-out open-loop validation loss -- the primary Ch 4 metric.
+
+    Iterate the (held-out) ``loader`` and score the autoregressive
+    head's teacher-forced, pad-masked cross-entropy on data it never
+    trained on. This is the same loss ``train`` optimizes, computed here
+    with no gradient in eval mode, so it is directly comparable to the
+    training curve -- just honest, because the batches are held out.
+
+    Open-loop is an *optimistic* proxy for closed-loop success: it feeds
+    the policy ground-truth states at every step, so the policy never
+    sees the compounding errors a real rollout would surface. But it is a
+    real, reproducible number, unlike the domain-mismatched
+    ``PickCubeSO100-v1`` sim (see the module docstring and
+    ``docs/EVAL_INCONSISTENCY.md``), which is why the chapter reports it
+    as primary.
+
+    Per batch: squeeze the ``[B, 1, 6]`` state to ``[B, 6]``, encode the
+    fused prefix, tokenize ``action`` (``[B, H, D]``) to bins and flatten
+    to ``[B, H * D]``, expand the ``[B, H]`` ``action_is_pad`` frame mask
+    to token level (``repeat_interleave`` by ``D``), and run the head's
+    masked CE path (``logits`` + ``cross_entropy(reduction="none")`` with
+    the float32 upcast ``forward`` uses). Losses accumulate
+    **token-weighted**: fully-padded batches add 0 to both the numerator
+    and the token count, so they leave ``val_loss`` unchanged.
+
+    ``n_batches`` (optional) caps how many batches are read, for a quick
+    estimate on a large held-out split.
+
+    Returns ``{"val_loss": float, "per_dim_loss": list[float],
+    "n_tokens": int}`` -- the scalar token-weighted mean CE, the mean CE
+    for each of the ``D`` action dimensions (token index ``% D`` selects
+    the dimension), and the number of unmasked action tokens scored.
+    """
+    head.eval()
+    fusion.eval()
+    loss_sum = 0.0
+    n_tokens = 0
+    action_dim: int | None = None
+    per_dim_sum: np.ndarray | None = None
+    per_dim_count: np.ndarray | None = None
+
+    with torch.no_grad():
+        for i, batch in enumerate(loader):
+            if n_batches is not None and i >= n_batches:
+                break
+            state = batch["observation.state"]
+            model_batch = dict(batch)
+            model_batch["observation.state"] = state.squeeze(1).to(
+                device
+            )
+            for key in (
+                "observation.images.up",
+                "observation.images.side",
+            ):
+                model_batch[key] = batch[key].to(device)
+
+            action = batch["action"]  # [B, H, D]
+            batch_size, horizon, dim = action.shape
+            if action_dim is None:
+                action_dim = dim
+                per_dim_sum = np.zeros(dim, dtype=np.float64)
+                per_dim_count = np.zeros(dim, dtype=np.int64)
+
+            bins = torch.from_numpy(
+                tokenizer.encode(action.numpy())
+            ).long().to(device)
+            target = bins.reshape(batch_size, -1)  # [B, H * D]
+
+            pad = batch.get("action_is_pad")
+            if pad is not None:
+                pad_mask = pad.to(device).repeat_interleave(
+                    dim, dim=1
+                )  # [B, H * D]
+            else:
+                pad_mask = torch.zeros_like(target, dtype=torch.bool)
+
+            prefix = fusion.encode_prefix(model_batch)
+            logits = head.logits(prefix, target)  # [B, T, n_bins]
+            # Mirror head.forward's masked CE exactly: float32 upcast
+            # (bf16 softmax is too coarse at the ~log(256) scale), then
+            # token-level cross-entropy with the pad positions zeroed.
+            flat_logits = logits.reshape(-1, head.n_bins).float()
+            flat_targets = target.reshape(-1)
+            ce = F.cross_entropy(
+                flat_logits, flat_targets, reduction="none"
+            )
+            keep = (~pad_mask.reshape(-1)).to(ce.dtype)
+            weighted = (ce * keep).cpu().numpy()
+            keep_np = keep.cpu().numpy()
+
+            loss_sum += float(weighted.sum())
+            n_tokens += int(keep_np.sum())
+
+            # token index t = h * D + d, so d = t % D selects the joint.
+            dim_ids = np.tile(
+                np.arange(horizon * dim) % dim, batch_size
+            )
+            for d in range(dim):
+                sel = dim_ids == d
+                per_dim_sum[d] += weighted[sel].sum()
+                per_dim_count[d] += int(keep_np[sel].sum())
+
+    if action_dim is None:  # empty loader
+        return {"val_loss": 0.0, "per_dim_loss": [], "n_tokens": 0}
+
+    val_loss = loss_sum / max(n_tokens, 1)
+    per_dim_loss = [
+        float(per_dim_sum[d] / max(int(per_dim_count[d]), 1))
+        for d in range(action_dim)
+    ]
+    return {
+        "val_loss": val_loss,
+        "per_dim_loss": per_dim_loss,
+        "n_tokens": n_tokens,
+    }
 
 
 def coerce_success(value) -> bool:

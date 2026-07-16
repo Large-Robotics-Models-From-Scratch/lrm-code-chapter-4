@@ -51,7 +51,7 @@ caveat in the text.
 
 ## 4. [note] "mask the non-action vocabulary ids to −∞" is moot — §4.5.5
 
-- **Where:** line 336 (§4.5.5): the decode "mask[s] the non-action
+- **Where:** line 334 (§4.5.5): the decode "mask[s] the non-action
   vocabulary ids to `−∞` first so the head cannot emit an English word."
 - **Problem:** the shipped head reads out through a **256-way** `Linear`
   (`AutoregressiveActionHead.readout`), so it can only ever emit one of
@@ -182,3 +182,30 @@ caveat in the text.
   every training/eval path and the notebook do. Cross-entropy also
   upcasts logits to float32 before the loss (bf16 softmax is too coarse
   at the `~log(256)` scale). Worth a one-line dtype note in §4.5.
+
+## 13. [bug] Closed-loop-on-`PickCubeSO100` eval is domain-mismatched — §4.6.4, §4.8
+
+- **Where:** §4.6.4 (Listing 4.14) runs the policy **closed-loop** in
+  the ManiSkill `PickCubeSO100-v1` sim, and §4.8 claims "roughly
+  **60–80% closed-loop success**" for the discrete head.
+- **Problem:** the policy is trained on the *real* `svla_so101_pickplace`
+  dataset (SO-101, two cameras, **absolute** joint-target actions) but
+  `PickCubeSO100-v1` is a different domain (SO-100, one camera, a
+  **delta**-action controller `pd_joint_delta_pos`). The absolute-vs-delta
+  action-space gap alone breaks the rollout, so the shipped code would
+  reproduce near-0%, not 60–80% — and the failure would be attributable
+  to the train/eval domain gap, not the discrete-BC method the chapter
+  teaches. This is a cross-chapter contract issue (the env and its
+  control mode are established in Ch 2 and ratified in Ch 3), not a
+  Ch 4-local choice.
+- **Fix:** the repo makes **open-loop the primary eval** — held-out
+  validation loss (`rollout.evaluate_open_loop`), predicted-vs-expert
+  action traces (`diagnostics.plot_action_traces`), and the
+  multimodality diagnostics (Figures 4.8–4.10) — and treats the
+  ManiSkill closed-loop rollout as **optional/aspirational**, clearly
+  caveated and GPU-gated, with **no success number claimed**. The
+  manuscript should drop the "60–80% closed-loop success" figure (or
+  reframe it as aspirational, pending a matched-domain sim) and point to
+  `docs/EVAL_INCONSISTENCY.md`, which documents every mismatch and the
+  author's decision (Option 1). A matched-domain closed-loop eval is
+  deferred to the ch2/ch3 owners.

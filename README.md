@@ -33,7 +33,7 @@ The three-act arc:
 | `chunk_data.py` | PR 5 | Action-chunk batching + teacher forcing |
 | `train.py` | PR 6 | Cross-entropy training loop with label smoothing |
 | `policy.py` | PR 7 | Constrained decoding wrapper around backbone + head |
-| `rollout.py` / diagnostics | PR 8 | Sim eval on `PickCubeSO100-v1`, joint-coordination plots |
+| `rollout.py` / diagnostics | PR 8 | **Open-loop eval** (held-out val loss + action traces, primary); optional `PickCubeSO100-v1` sim rollout; multimodality plots |
 
 `main` carries only the scaffold; each module lands in its own PR (same convention as Ch 2 / Ch 3).
 
@@ -84,9 +84,11 @@ jupyter lab notebooks/ch04.ipynb
 bottom on the real dataset and backbone, with outputs, loss/entropy
 curves, and figures committed — read it to see the payoff without
 running anything. On a CPU/MPS host the notebook runs a short *real*
-training smoke (a few dozen steps); the full 800-step demo and the
-closed-loop ManiSkill rollout are GPU/Colab paths (guarded by
-`RUN_FULL` / `RUN_SIM` flags). The demo recipe also runs standalone:
+training smoke (a few dozen steps) and the full **open-loop eval**
+(held-out validation loss + action traces) live; the full 800-step demo
+and the optional closed-loop ManiSkill rollout are GPU/Colab paths
+(guarded by `RUN_FULL` / `RUN_SIM` flags). The demo recipe also runs
+standalone:
 
 ```bash
 python -m ch04.train --config configs/demo.yaml   # ~800 steps, T4-safe
@@ -104,6 +106,35 @@ and backbone loaded. There is no silent synthetic fallback.
 `exercises/` has scaffolded stubs (focal loss, multimodal stress test,
 entropy diagnostic, k-means binning) and `exercises/solutions.ipynb`
 with worked answers.
+
+### Evaluation: open-loop primary, sim optional
+
+The chapter's **primary eval is open-loop on held-out episodes**, not a
+closed-loop sim success rate. The policy trains on the real
+`svla_so101_pickplace` dataset (SO-101, two cameras, absolute
+joint-target actions), while the ManiSkill `PickCubeSO100-v1` sim is a
+different domain (SO-100, one camera, a delta-action controller) — a
+train/eval mismatch where the absolute-vs-delta action-space gap alone
+breaks the rollout. A sim success number would measure that domain gap,
+not the discrete-BC method. See
+[`docs/EVAL_INCONSISTENCY.md`](docs/EVAL_INCONSISTENCY.md) for the full
+argument and the cross-chapter decision.
+
+So the notebook reports, as primary:
+
+- **Held-out validation loss** — `rollout.evaluate_open_loop` scores the
+  head's teacher-forced cross-entropy (with a per-joint breakdown) on
+  episodes the policy never trained on.
+- **Action-trace figure** — `diagnostics.plot_action_traces` overlays
+  predicted vs ground-truth joint traces on a held-out episode
+  (grayscale-safe: solid expert, dashed prediction).
+- **Multimodality diagnostics** — Figures 4.8–4.10 (bimodal convergence,
+  MSE-vs-categorical, joint coordination).
+
+The closed-loop `PickCubeSO100-v1` rollout (`rollout.evaluate`) is kept
+as an **optional, domain-caveated** cell (GPU/Vulkan-gated, `RUN_SIM`),
+with **no success number claimed**. A matched-domain closed-loop eval is
+deferred to the ch2/ch3 owners.
 
 ### SO-100 vs SO-101
 
@@ -178,6 +209,7 @@ lrm-code-chapter-4/
 │   └── chapter-04-guide.md
 ├── docs/
 │   ├── manuscript_fixes.md
+│   ├── EVAL_INCONSISTENCY.md
 │   ├── decisions/
 │   │   └── 000-environment-pins.md
 │   └── internal/
@@ -198,6 +230,7 @@ lrm-code-chapter-4/
     ├── test_policy.py
     ├── test_rollout.py
     ├── test_diagnostics.py
+    ├── test_open_loop.py
     └── test_toy_bimodal.py
 ```
 
@@ -221,7 +254,7 @@ against `git ls-files`.
 | Robot | SO-101 data / SO-100 sim (D = 6: 5 arm joints + gripper) | Ch 2 hand-off |
 | Chunk | H = 16 | Ch 4 owns |
 | Backbone | `ch03.UnifiedEmbeddingBackbone` — hidden dim 576, two cameras (`up` + `side`), native SmolLM2 vocab 49,152 | Ch 3 hand-off |
-| Sim eval | `PickCubeSO100-v1` (fallback `SO100GraspCube-v1`) | ADR 000 |
+| Eval | **Open-loop primary** (held-out val loss + action traces + multimodality diagnostics); `PickCubeSO100-v1` closed-loop sim optional/domain-caveated | `docs/EVAL_INCONSISTENCY.md`, ADR 000 |
 
 ## Hand-off contract from Chapter 3
 

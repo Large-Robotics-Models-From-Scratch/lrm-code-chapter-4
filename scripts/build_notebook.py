@@ -43,7 +43,10 @@ camera views, an instruction, and the robot's joint state into a
 sequence of hidden states, ``[B, 392 + L + 1, 576]``. You walk out
 with the chapter's first working **policy** -- an action head that
 turns those hidden states into robot actions, trained by behavior
-cloning on real teleoperation data and run closed-loop in simulation.
+cloning on real teleoperation data and evaluated **open-loop** on
+held-out episodes (the primary, honest metric; a domain-mismatched
+sim rollout is kept as an optional extra -- see
+``docs/EVAL_INCONSISTENCY.md``).
 
 The arc is three acts:
 
@@ -445,6 +448,12 @@ else:
     print("CPU/MPS -> short REAL smoke of the demo recipe:",
           cfg.total_steps, "steps on real data (Colab runs the full 800)")
 
+# Hold out the last two episodes for the open-loop eval below, so the
+# primary metric (§4.8) is scored on data the policy never trained on.
+TRAIN_EPISODES = [0, 1, 2, 3, 4, 5, 6, 7]
+HELD_OUT_EPISODES = [8, 9]
+cfg.episodes = TRAIN_EPISODES
+
 train_ds = make_chunk_dataset(episodes=cfg.episodes)
 train_loader = make_chunk_loader(
     train_ds, batch_size=cfg.microbatch, num_workers=0
@@ -614,19 +623,120 @@ for name in ("4_8_convergence_ridges", "4_9_bimodal_comparison",
     print("saved figures/figure_" + name + ".png")
 ''')
 
-# ---------------------------------------------------------- finale
+# ------------------------------------------ 4.8 open-loop primary eval
 md("""
-## Finale: closed-loop rollout in simulation
+## 4.8 Primary evaluation: open-loop on held-out data
 
-The payoff: reload the policy, drop it into the ``PickCubeSO100-v1``
-ManiSkill environment, and measure a success rate over several seeds.
+This is Chapter 4's **primary, honest eval**. The policy was trained on
+the *real* ``svla_so101_pickplace`` dataset (SO-101, two cameras,
+absolute joint-target actions); the ManiSkill ``PickCubeSO100-v1`` sim
+in the optional cell below is a **different domain** (SO-100, one
+camera, a delta-action controller), so a sim success number there would
+measure the train/eval domain gap, not the method the chapter teaches
+(the full argument is in ``docs/EVAL_INCONSISTENCY.md``). Until a
+matched-domain sim exists (a ch2/ch3 decision), we report open-loop
+metrics on **held-out episodes** the policy never saw.
 
-**This cell is heavy and GPU/Colab-gated.** ManiSkill needs a working
-Vulkan/SAPIEN stack that is not available on every host (notably CPU-
-only macOS), and the env is single-camera (a real sim-vs-dataset gap:
-the two-camera backbone gets the one ``base_camera`` view duplicated --
-see ``docs/manuscript_fixes.md``). It is guarded by ``RUN_SIM`` so the
-notebook completes everywhere; set ``RUN_SIM = True`` on Colab.
+Open-loop is an *optimistic* proxy -- it feeds the policy ground-truth
+states at every step, so it never sees the compounding error a closed
+loop would surface -- but it is a real, reproducible number. Three
+pieces make the eval story:
+
+1. **Held-out validation loss** (``evaluate_open_loop``): the same
+   teacher-forced cross-entropy the training loop minimizes, scored
+   with no gradient on the held-out episodes 8-9, plus a per-joint
+   breakdown.
+2. **Action-trace figure** (``plot_action_traces``): predicted vs
+   ground-truth joint traces on a held-out episode -- does the policy
+   track the expert?
+3. **The multimodality diagnostics above** (Figures 4.8-4.10): the
+   evidence that the categorical/autoregressive head captures the
+   bimodal, coordinated structure MSE collapses.
+""")
+
+code('''
+from ch04.rollout import evaluate_open_loop
+
+# Episodes 8-9 were held out of training (see the training cell).
+held_out_ds = make_chunk_dataset(episodes=HELD_OUT_EPISODES)
+held_out_loader = make_chunk_loader(
+    held_out_ds, batch_size=4, num_workers=0
+)
+
+ar_head.eval()
+metrics = evaluate_open_loop(
+    ar_head, fusion, tokenizer, held_out_loader, device=str(device)
+)
+print(f"held-out val loss : {metrics['val_loss']:.4f} nats "
+      f"(over {metrics['n_tokens']} action tokens)")
+print("per-joint CE (nats):")
+for name, ce in zip(joints, metrics["per_dim_loss"]):
+    print(f"  {name:>8}: {ce:.4f}")
+print("\\nopen-loop is the PRIMARY Ch 4 metric; the sim cell below is")
+print("optional/aspirational -- see docs/EVAL_INCONSISTENCY.md")
+''')
+
+md("""
+### Does the policy track the expert? Open-loop action traces
+
+Decode one action chunk from a held-out observation and overlay it on
+the expert's recorded actions, joint by joint (``plot_action_traces``:
+solid ground truth, dashed prediction, grayscale-safe). This is the
+sim-free qualitative counterpart to the validation loss -- no
+simulator, no domain-mismatched success number, just "does the head
+reproduce the demonstration on data it never trained on."
+
+On the short CPU smoke the traces will be loose (the head is barely
+trained); the full-recipe checkpoint (Task 11) tightens them.
+""")
+
+code('''
+from ch04.diagnostics import (
+    open_loop_episode_predictions,
+    plot_action_traces,
+)
+from ch04.policy import DiscretePolicy
+
+ar_head.eval()
+trace_policy = DiscretePolicy(
+    fusion, ar_head, tokenizer,
+    chunk_h=CHUNK_H, action_dim=ACTION_DIM,
+    strategy="argmax", device=str(device),
+)
+held_out_batch = next(iter(held_out_loader))
+pred_chunk, true_chunk = open_loop_episode_predictions(
+    trace_policy, held_out_batch, index=0
+)
+trace_path = plot_action_traces(
+    pred_chunk, true_chunk,
+    FIG / "figure_4_open_loop_traces.png", joint_names=joints,
+)
+print("saved", trace_path)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.imshow(plt.imread(trace_path))
+ax.axis("off")
+plt.show()
+''')
+
+# ------------------------------------ optional (demoted) sim rollout
+md("""
+## Optional / aspirational: closed-loop sim eval (domain-mismatched)
+
+**This is not a headline metric.** ``PickCubeSO100-v1`` is a
+domain-mismatched eval for a policy trained on the real SO-101 dataset:
+absolute-vs-delta action space, real-vs-rendered vision, SO-100 vs
+SO-101 hardware, one camera vs two. Expect low success reflecting that
+domain gap, **not** the discrete-BC method (the full argument is in
+``docs/EVAL_INCONSISTENCY.md``). A matched-domain closed-loop eval is
+deferred to the ch2/ch3 owners; the primary Chapter 4 eval is the
+open-loop section above.
+
+The cell is kept for that future matched-domain sim. It is heavy and
+GPU/Vulkan-gated -- ManiSkill needs a working Vulkan/SAPIEN stack
+(absent on CPU-only macOS) -- and guarded by ``RUN_SIM`` so the
+notebook completes everywhere. Do not read its success rate as a
+verdict on the method.
 """)
 
 code('''
@@ -637,23 +747,26 @@ if RUN_SIM:
     from ch04.rollout import evaluate, make_maniskill_obs_adapter
 
     ar_head.eval()
-    policy = DiscretePolicy(
+    sim_policy = DiscretePolicy(
         fusion, ar_head, tokenizer,
         chunk_h=CHUNK_H, action_dim=ACTION_DIM,
         device=str(device),
     )
     adapter = make_maniskill_obs_adapter("pick up the cube")
     success_rate, per_seed = evaluate(
-        policy, env_id="PickCubeSO100-v1", n_seeds=10,
+        sim_policy, env_id="PickCubeSO100-v1", n_seeds=10,
         obs_adapter=adapter, max_steps=200,
     )
     print(f"success rate over {len(per_seed)} seeds: {success_rate:.0%}")
     print("per-seed:", per_seed)
+    print("(domain-mismatched eval; low success reflects the gap,")
+    print(" not the method -- see docs/EVAL_INCONSISTENCY.md)")
 else:
     print("RUN_SIM is False -- skipping the ManiSkill rollout.")
-    print("Requires a GPU/Colab host with Vulkan + SAPIEN.")
-    print("The demo-trained head above is a smoke run; real success")
-    print("rates come from the full-recipe checkpoint (Task 11).")
+    print("This closed-loop sim is OPTIONAL and domain-mismatched; the")
+    print("primary Ch 4 eval is the open-loop section above. See")
+    print("docs/EVAL_INCONSISTENCY.md for why sim success here reflects")
+    print("the train/eval domain gap, not the discrete-BC method.")
 ''')
 
 # --------------------------------------------------------- summary
@@ -671,8 +784,13 @@ backbone:
   uniform band.
 - **Trained** the demo recipe by discrete behavior cloning and watched
   loss and entropy fall.
-- Regenerated the evidence figures and (on GPU) ran a closed-loop
-  rollout.
+- **Evaluated open-loop** -- the chapter's primary, honest metric:
+  held-out validation loss (``evaluate_open_loop``), predicted-vs-expert
+  action traces (``plot_action_traces``), and the multimodality
+  diagnostics (Figures 4.8-4.10). The ManiSkill closed-loop rollout is
+  kept as an optional, domain-caveated extra (``docs/EVAL_INCONSISTENCY``
+  ``.md`` explains why sim success would measure the domain gap, not the
+  method).
 
 **To Chapter 5.** The shipped head factorizes the chunk
 autoregressively, ``p(a | o) = ∏_t ∏_d p(a_{t,d} | o, a_{<(t,d)})``.
