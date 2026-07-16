@@ -52,7 +52,10 @@ def test_make_chunk_dataset_passes_episodes(monkeypatch):
     calls = []
 
     class _FakeDataset:
-        def __init__(self, repo_id, delta_timestamps=None, episodes=None):
+        def __init__(
+            self, repo_id, delta_timestamps=None, episodes=None,
+            root=None,
+        ):
             calls.append(episodes)
             self.fps = 30
 
@@ -68,7 +71,10 @@ def test_make_chunk_dataset_episodes_defaults_to_none(monkeypatch):
     calls = []
 
     class _FakeDataset:
-        def __init__(self, repo_id, delta_timestamps=None, episodes=None):
+        def __init__(
+            self, repo_id, delta_timestamps=None, episodes=None,
+            root=None,
+        ):
             calls.append(episodes)
             self.fps = 30
 

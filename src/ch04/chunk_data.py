@@ -62,6 +62,7 @@ def make_chunk_dataset(
     repo_id: str = "lerobot/svla_so101_pickplace",
     chunk_h: int = CHUNK_H,
     episodes: list[int] | None = None,
+    root: str | None = None,
 ) -> LeRobotDataset:
     """``LeRobotDataset`` with delta_timestamps derived from its fps.
 
@@ -79,13 +80,20 @@ def make_chunk_dataset(
     indices via lerobot's own ``episodes`` kwarg, so a demo run
     (``configs/demo.yaml``) touches a handful of episodes instead of
     the full dataset. ``None`` (default) loads everything.
+
+    ``root`` (optional) is forwarded to ``LeRobotDataset(root=...)``:
+    ``None`` (default) uses lerobot's Hub cache, while a local path
+    loads a dataset that already lives on disk without touching the
+    Hub -- the seam the end-to-end tests use to point at a tiny toy
+    dataset built by ``tests/toy_dataset.py``.
     """
-    probe = LeRobotDataset(repo_id, episodes=episodes)
+    probe = LeRobotDataset(repo_id, episodes=episodes, root=root)
     delta_timestamps = chunk_delta_timestamps(probe.fps, chunk_h)
     return LeRobotDataset(
         repo_id,
         delta_timestamps=delta_timestamps,
         episodes=episodes,
+        root=root,
     )
 
 
