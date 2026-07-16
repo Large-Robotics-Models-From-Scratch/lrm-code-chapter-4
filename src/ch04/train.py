@@ -158,13 +158,25 @@ def autocast_context(device, bf16):
     return _null_context()
 
 
-def _prepare_batch(batch, tokenizer, device):
+def prepare_model_batch(batch, tokenizer, device):
     """Listing 4.13 encoding path + the PR 5 data-contract fixes.
 
-    Returns ``(model_batch, bins, pad_mask)`` where ``model_batch`` has
-    a squeezed ``[B, 6]`` state, ``bins`` is the flattened target token
-    ids ``[B, H * D]``, and ``pad_mask`` is the token-level ``[B, H * D]``
-    ignore mask (or ``None`` when the batch carries no ``action_is_pad``).
+    The one place both the training loop (``train``) and the open-loop
+    evaluator (``rollout.evaluate_open_loop``) move a raw lerobot batch
+    onto the compute device and turn it into the head's inputs. Sharing
+    it is not just DRY: the two paths silently drifted once (eval moved
+    the camera tensors to ``device`` but training did not), which hard-
+    crashed every GPU run when the on-device SigLIP met CPU images. One
+    helper, one device contract, no drift.
+
+    Moves **every** tensor the forward touches to ``device`` -- the
+    squeezed ``[B, 6]`` state *and* both camera keys
+    (``observation.images.up`` / ``...side``) -- so ``encode_prefix`` runs
+    entirely on-device. Returns ``(model_batch, bins, pad_mask)`` where
+    ``model_batch`` has the device-resident state and cameras, ``bins`` is
+    the flattened target token ids ``[B, H * D]`` on ``device``, and
+    ``pad_mask`` is the token-level ``[B, H * D]`` ignore mask on
+    ``device`` (or ``None`` when the batch carries no ``action_is_pad``).
     """
     state = batch["observation.state"]
     assert state.dim() == 3 and state.shape[1] == 1, (
@@ -172,6 +184,10 @@ def _prepare_batch(batch, tokenizer, device):
     )
     model_batch = dict(batch)
     model_batch["observation.state"] = state.squeeze(1).to(device)
+    # Cameras feed the on-device SigLIP inside ``encode_prefix``; leaving
+    # them on the CPU is the GPU crash this helper exists to prevent.
+    for key in ("observation.images.up", "observation.images.side"):
+        model_batch[key] = batch[key].to(device)
 
     action = batch["action"]  # [B, H, D]
     bins_np = tokenizer.encode(action.numpy())  # [B, H, D] int
@@ -191,8 +207,9 @@ def _batch_entropy(head, prefix, bins):
 
     A fresh head sits near ``log(n_bins)`` (uniform); a collapsing or
     over-confident head drifts far from it. Computed under ``no_grad``
-    on logging steps only, reusing the head's ``logits`` path so it adds
-    no gradient work.
+    on logging steps only: it re-runs a full forward through the head's
+    ``logits`` path (a real compute cost, though no gradient/backward
+    work), which is cheap at the default ``log_every=50``.
     """
     with torch.no_grad():
         logits = head.logits(prefix, bins).float()
@@ -258,7 +275,7 @@ def train(head, fusion, tokenizer, loader, cfg, log_fn=print):
                 done = True
                 break
 
-            model_batch, bins, pad_mask = _prepare_batch(
+            model_batch, bins, pad_mask = prepare_model_batch(
                 batch, tokenizer, device
             )
             with autocast_context(device, use_bf16):
@@ -415,7 +432,11 @@ def main(argv=None):
     fusion = FusionAdapter(backbone)
     head = AutoregressiveActionHead(fusion)
     dataset = make_chunk_dataset(episodes=cfg.episodes)
-    tokenizer = ActionTokenizer.from_lerobot_stats(dataset.meta.stats)
+    # The real svla_so101_pickplace stats carry only min/max/mean/std/
+    # count -- no q01/q99 -- so ``from_lerobot_stats`` raises by design.
+    # ``from_lerobot_dataset`` computes the robust percentiles directly
+    # from the action column (the dataset gotcha in CLAUDE.md).
+    tokenizer = ActionTokenizer.from_lerobot_dataset(dataset)
     loader = make_chunk_loader(dataset, batch_size=cfg.microbatch)
 
     device = torch.device(

@@ -98,7 +98,10 @@ class AutoregressiveActionHead(nn.Module):
         # softmax is too coarse at the ~log(256) scale; float32 CE is
         # standard practice and keeps the loss stable and comparable.
         flat_logits = logits.reshape(-1, self.n_bins).float()
-        flat_targets = target_bins.reshape(-1)
+        # ``cross_entropy`` requires int64 class targets; ``_validate``
+        # accepts any integer dtype (int32 is a valid bin tensor), so
+        # coerce here rather than let CE raise a raw torch dtype error.
+        flat_targets = target_bins.reshape(-1).long()
         if pad_mask is None:
             return F.cross_entropy(flat_logits, flat_targets)
         ce = F.cross_entropy(

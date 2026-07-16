@@ -9,7 +9,7 @@ that carries text.
 Pure NumPy, no torch dependency: the same tokenizer runs at training
 time on GPU-side data and at deployment time on an edge CPU.
 
-Vocabulary convention (matches the chapter's listing 4.7): the last
+Vocabulary convention (Listing 4.3, vocab reuse in SS4.3.1): the last
 ``n_bins`` ids of the language model vocabulary are reserved as action
 tokens, *shared across all action dimensions*. Position in the decoded
 sequence (which timestep, which joint) disambiguates the dimension,

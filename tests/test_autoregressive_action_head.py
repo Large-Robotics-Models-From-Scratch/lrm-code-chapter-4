@@ -185,6 +185,24 @@ def test_float_targets_raise():
         head.logits(prefix, targets)
 
 
+def test_int32_targets_train_ok():
+    """int32 bins are valid (``_validate`` accepts any integer dtype),
+    so ``forward`` must not crash inside ``cross_entropy`` -- it coerces
+    the CE targets to int64 and returns a finite scalar loss.
+    """
+    torch.manual_seed(0)
+    head = _head()
+    prefix = _prefix()
+    targets = torch.randint(
+        0, N_BINS, (BATCH, HORIZON), dtype=torch.int32
+    )
+
+    loss = head(prefix, targets)
+
+    assert loss.shape == ()
+    assert torch.isfinite(loss)
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 def test_integration_real_backbone_fresh_loss():

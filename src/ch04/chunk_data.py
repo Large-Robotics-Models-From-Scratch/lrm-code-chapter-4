@@ -32,11 +32,11 @@ Squeeze dim 1 before handing state to the Chapter 3 backbone.
 from __future__ import annotations
 
 import torch
-from ch03.preprocess import preprocess_image
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from torch.utils.data import DataLoader
 
 from ch04 import CHUNK_H
+from ch04.fusion_adapter import stack_cameras
 
 
 def chunk_delta_timestamps(
@@ -112,10 +112,9 @@ def make_chunk_loader(
 def prepare_images(batch: dict) -> torch.Tensor:
     """Stack up + side cameras to ``[B, 2, 3, 224, 224]``, ``[0, 1]``.
 
-    Each camera arrives as ``[B, 3, H, W]`` in ``[0, 1]``;
-    ``preprocess_image`` resizes to SigLIP's ``224 x 224`` without
-    touching the value range.
+    Thin re-export of ``fusion_adapter.stack_cameras`` -- the exact op
+    ``encode_prefix`` performs internally on the raw camera keys. Shared
+    from ``fusion_adapter`` (torch + ch3 only) so the two never drift;
+    kept here under its original name for the data-loading API.
     """
-    up = preprocess_image(batch["observation.images.up"])
-    side = preprocess_image(batch["observation.images.side"])
-    return torch.stack([up, side], dim=1)
+    return stack_cameras(batch)

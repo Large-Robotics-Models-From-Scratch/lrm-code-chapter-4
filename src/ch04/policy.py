@@ -140,8 +140,7 @@ class DiscretePolicy:
     ``B = 1``): ``observation.images.up`` / ``...side`` ``[1, 3, H, W]``
     in ``[0, 1]``, ``observation.state`` ``[1, 6]``, and ``task``
     ``list[str]`` of length 1. Task 9 supplies the ManiSkill ->
-    batch-dict adapter; here the caller passes the dict directly (or a
-    state-only ``[6]`` / ``[1, 6]`` array is accepted for convenience).
+    batch-dict adapter; here the caller passes the dict directly.
     """
 
     def __init__(

@@ -25,6 +25,23 @@ import torch.nn as nn
 from ch03.preprocess import preprocess_image
 
 
+def stack_cameras(batch: dict) -> torch.Tensor:
+    """Stack up + side cameras to ``[B, 2, 3, 224, 224]``, ``[0, 1]``.
+
+    Each camera arrives as ``[B, 3, H, W]`` in ``[0, 1]``;
+    ``preprocess_image`` resizes to SigLIP's ``224 x 224`` without
+    touching the value range, then the two views stack on a new camera
+    axis (up first, then side -- ch3's fixed order).
+
+    Lives here (torch + ch3 only, no lerobot) so both ``encode_prefix``
+    and ``chunk_data.prepare_images`` share one implementation without
+    dragging lerobot into the adapter's dependency surface.
+    """
+    up = preprocess_image(batch["observation.images.up"])
+    side = preprocess_image(batch["observation.images.side"])
+    return torch.stack([up, side], dim=1)  # [B, 2, 3, 224, 224]
+
+
 class FusionAdapter(nn.Module):
     """Compose ch3's backbone into the action head's fusion surface."""
 
@@ -72,9 +89,7 @@ class FusionAdapter(nn.Module):
                 "sequence_ids, which is out of scope for this chapter."
             )
 
-        up = preprocess_image(batch["observation.images.up"])
-        side = preprocess_image(batch["observation.images.side"])
-        cameras = torch.stack([up, side], dim=1)  # [B, 2, 3, 224, 224]
+        cameras = stack_cameras(batch)  # [B, 2, 3, 224, 224]
         batch_size = cameras.shape[0]
 
         siglip = bb.vision_encoder(cameras.flatten(0, 1))  # [B*2, P, 768]

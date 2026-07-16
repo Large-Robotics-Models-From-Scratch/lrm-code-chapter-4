@@ -24,6 +24,7 @@ from ch04.train import (
     build_optimizer,
     load_checkpoint,
     load_config,
+    prepare_model_batch,
     save_checkpoint,
     train,
     unfreeze_backbone,
@@ -68,6 +69,47 @@ def _batch(seed=0):
         "observation.images.side": torch.rand(BATCH, 3, 224, 224),
         "task": ["pick up the cube"] * BATCH,
     }
+
+
+# -- shared device-safe batch prep -----------------------------------
+
+
+def _prep_devices():
+    """cpu always; add mps/cuda when the accelerator is present."""
+    devices = ["cpu"]
+    if torch.backends.mps.is_available():
+        devices.append("mps")
+    if torch.cuda.is_available():
+        devices.append("cuda")
+    return devices
+
+
+@pytest.mark.parametrize("device_str", _prep_devices())
+def test_prepare_model_batch_moves_all_tensors_to_device(device_str):
+    """Regression for the GPU crash: ``encode_prefix`` runs the cameras
+    through the on-device SigLIP, so EVERY tensor the forward touches --
+    state, both camera keys, bins, pad mask -- must land on ``device``.
+    Camera tensors were the ones left on CPU before the shared helper.
+    """
+    device = torch.device(device_str)
+    tokenizer = _tokenizer()
+    batch = _batch(seed=3)
+
+    model_batch, bins, pad_mask = prepare_model_batch(
+        batch, tokenizer, device
+    )
+
+    assert model_batch["observation.state"].device.type == device.type
+    assert (
+        model_batch["observation.images.up"].device.type == device.type
+    )
+    assert (
+        model_batch["observation.images.side"].device.type
+        == device.type
+    )
+    assert bins.device.type == device.type
+    assert pad_mask is not None
+    assert pad_mask.device.type == device.type
 
 
 # -- warmup_cosine ----------------------------------------------------
@@ -309,3 +351,98 @@ def test_load_config_rejects_unknown_key(tmp_path):
 
     with pytest.raises(ValueError, match="microbatch_size"):
         load_config(str(bad))
+
+
+# -- main() wiring (README quickstart CLI path) -----------------------
+
+
+class _FakeMeta:
+    """Stats shaped like the real ``svla_so101_pickplace`` meta: only
+    ``min/max/mean/std/count`` -- deliberately NO ``q01``/``q99``, so
+    ``from_lerobot_stats`` would raise. If ``main`` ever routes through
+    it again, tokenizer construction blows up and this test fails.
+    """
+
+    def __init__(self, dim):
+        self.stats = {
+            "action": {
+                "min": [-9.0] * dim,
+                "max": [9.0] * dim,
+                "mean": [0.0] * dim,
+                "std": [1.0] * dim,
+                "count": [1],
+            }
+        }
+
+
+class _FakeDataset:
+    """Minimal stand-in exposing the two attributes ``main`` touches:
+    ``meta.stats`` and the ``hf_dataset[key]`` action column."""
+
+    def __init__(self, actions):
+        self.hf_dataset = {"action": actions}
+        self.meta = _FakeMeta(actions[0].shape[0])
+
+
+def test_main_builds_tokenizer_from_dataset_not_stats(
+    tmp_path, monkeypatch
+):
+    """The README quickstart CLI (``python -m ch04.train``) must build
+    the tokenizer from the dataset action column, because the real
+    dataset stats carry no q01/q99 and ``from_lerobot_stats`` raises on
+    them. This pins ``main``'s wiring with record-call fakes -- no model
+    download, no lerobot -- and asserts the tokenizer's range matches the
+    column percentiles (i.e. it came from ``from_lerobot_dataset``).
+    """
+    import sys
+    import types
+
+    from ch04 import train as train_mod
+
+    rng = np.random.default_rng(0)
+    actions = [
+        rng.standard_normal(ACTION_DIM).astype(np.float64)
+        for _ in range(64)
+    ]
+    stacked = np.stack(actions, axis=0)
+    expected_lo = np.percentile(stacked, 1, axis=0)
+    expected_hi = np.percentile(stacked, 99, axis=0)
+    dataset = _FakeDataset(actions)
+
+    # Fake ch3 so `from ch03 import UnifiedEmbeddingBackbone` inside
+    # main() returns the toy backbone instead of downloading SmolLM2.
+    fake_ch03 = types.ModuleType("ch03")
+    fake_ch03.UnifiedEmbeddingBackbone = FakeBackbone
+    monkeypatch.setitem(sys.modules, "ch03", fake_ch03)
+
+    monkeypatch.setattr(
+        "ch04.chunk_data.make_chunk_dataset",
+        lambda *a, **k: dataset,
+    )
+    sentinel_loader = object()
+    monkeypatch.setattr(
+        "ch04.chunk_data.make_chunk_loader",
+        lambda *a, **k: sentinel_loader,
+    )
+
+    captured = {}
+
+    def fake_train(head, fusion, tokenizer, loader, cfg):
+        captured["tokenizer"] = tokenizer
+        captured["loader"] = loader
+        return {"ran": True}
+
+    monkeypatch.setattr(train_mod, "train", fake_train)
+
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text("microbatch: 4\ntotal_steps: 10\n")
+
+    result = train_mod.main(["--config", str(cfg_path)])
+
+    assert result == {"ran": True}
+    assert captured["loader"] is sentinel_loader
+    tok = captured["tokenizer"]
+    # Range came from the column percentiles, not the [-9, 9] stats
+    # min/max -- proof the dataset path (not from_lerobot_stats) built it.
+    assert np.allclose(tok.lo, expected_lo)
+    assert np.allclose(tok.hi, expected_hi)

@@ -24,7 +24,7 @@ This repo contains the code for the **action head and discrete behavior cloning*
 
 **Vocabulary convention — IMPORTANT:** reserve the **existing** last 256 ids (48896–49151). Do **NOT** call `tokenizer.add_tokens` or `model.resize_token_embeddings`. The 256 ids are **shared** across all action dimensions — sequence position disambiguates which joint (manuscript + OpenVLA recipe). Enforced by `tests/test_guardrails.py`.
 
-**Dataset stats gotcha:** `lerobot/svla_so101_pickplace` `meta.stats["action"]` has only `min/max/mean/std/count` — **no q01/q99**. The tokenizer's `from_lerobot_stats` computes the 1st/99th percentiles itself with one pass over the action column (11,939 rows, cheap `np.percentile`). Do not fall back to raw min/max: they contain saturated endpoints that waste bin resolution.
+**Dataset stats gotcha:** `lerobot/svla_so101_pickplace` `meta.stats["action"]` has only `min/max/mean/std/count` — **no q01/q99**. So `ActionTokenizer.from_lerobot_stats` *raises* on this dataset (it only accepts stats that already carry the percentiles); use `ActionTokenizer.from_lerobot_dataset(dataset)` instead, which computes the 1st/99th percentiles itself with one pass over the action column (11,939 rows, cheap `np.percentile`). Do not fall back to raw min/max: they contain saturated endpoints that waste bin resolution.
 
 **Dtype gotcha (transformers 5.x):** `AutoModel.from_pretrained("HuggingFaceTB/SmolLM2-135M")` now loads in the checkpoint's native **bfloat16** (4.x defaulted to float32) while SigLIP loads float32, so the Ch 3 forward raises a dtype mismatch on the first matmul. Always load the backbone with an explicit `dtype=torch.float32` (or cast with `.float()`). Never rely on the 4.x float32 default.
 

@@ -57,6 +57,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ch04.train import prepare_model_batch
+
 
 def evaluate_open_loop(
     head,
@@ -99,6 +101,10 @@ def evaluate_open_loop(
     for each of the ``D`` action dimensions (token index ``% D`` selects
     the dimension), and the number of unmasked action tokens scored.
     """
+    # Restore each module's prior train/eval flag on the way out: an
+    # evaluator must not silently leave the caller's models in eval mode
+    # (a subtle bug if training resumes after a mid-run eval).
+    prev_modes = (head.training, fusion.training)
     head.eval()
     fusion.eval()
     loss_sum = 0.0
@@ -107,66 +113,58 @@ def evaluate_open_loop(
     per_dim_sum: np.ndarray | None = None
     per_dim_count: np.ndarray | None = None
 
-    with torch.no_grad():
-        for i, batch in enumerate(loader):
-            if n_batches is not None and i >= n_batches:
-                break
-            state = batch["observation.state"]
-            model_batch = dict(batch)
-            model_batch["observation.state"] = state.squeeze(1).to(
-                device
-            )
-            for key in (
-                "observation.images.up",
-                "observation.images.side",
-            ):
-                model_batch[key] = batch[key].to(device)
+    try:
+        with torch.no_grad():
+            for i, batch in enumerate(loader):
+                if n_batches is not None and i >= n_batches:
+                    break
+                # Shared device-safe prep (train.prepare_model_batch):
+                # squeezes state, moves state + both cameras to device,
+                # tokenizes/flattens the action chunk, expands the pad
+                # mask -- the same one place train() uses, so eval and
+                # train can never drift on the device contract again.
+                model_batch, target, pad_mask = prepare_model_batch(
+                    batch, tokenizer, device
+                )
+                horizon, dim = batch["action"].shape[1:]
+                batch_size = target.shape[0]
+                if action_dim is None:
+                    action_dim = dim
+                    per_dim_sum = np.zeros(dim, dtype=np.float64)
+                    per_dim_count = np.zeros(dim, dtype=np.int64)
+                if pad_mask is None:
+                    pad_mask = torch.zeros_like(
+                        target, dtype=torch.bool
+                    )
 
-            action = batch["action"]  # [B, H, D]
-            batch_size, horizon, dim = action.shape
-            if action_dim is None:
-                action_dim = dim
-                per_dim_sum = np.zeros(dim, dtype=np.float64)
-                per_dim_count = np.zeros(dim, dtype=np.int64)
+                prefix = fusion.encode_prefix(model_batch)
+                logits = head.logits(prefix, target)  # [B, T, n_bins]
+                # Mirror head.forward's masked CE exactly: float32 upcast
+                # (bf16 softmax is too coarse at the ~log(256) scale),
+                # then token-level CE with the pad positions zeroed.
+                flat_logits = logits.reshape(-1, head.n_bins).float()
+                flat_targets = target.reshape(-1)
+                ce = F.cross_entropy(
+                    flat_logits, flat_targets, reduction="none"
+                )
+                keep = (~pad_mask.reshape(-1)).to(ce.dtype)
+                weighted = (ce * keep).cpu().numpy()
+                keep_np = keep.cpu().numpy()
 
-            bins = torch.from_numpy(
-                tokenizer.encode(action.numpy())
-            ).long().to(device)
-            target = bins.reshape(batch_size, -1)  # [B, H * D]
+                loss_sum += float(weighted.sum())
+                n_tokens += int(keep_np.sum())
 
-            pad = batch.get("action_is_pad")
-            if pad is not None:
-                pad_mask = pad.to(device).repeat_interleave(
-                    dim, dim=1
-                )  # [B, H * D]
-            else:
-                pad_mask = torch.zeros_like(target, dtype=torch.bool)
-
-            prefix = fusion.encode_prefix(model_batch)
-            logits = head.logits(prefix, target)  # [B, T, n_bins]
-            # Mirror head.forward's masked CE exactly: float32 upcast
-            # (bf16 softmax is too coarse at the ~log(256) scale), then
-            # token-level cross-entropy with the pad positions zeroed.
-            flat_logits = logits.reshape(-1, head.n_bins).float()
-            flat_targets = target.reshape(-1)
-            ce = F.cross_entropy(
-                flat_logits, flat_targets, reduction="none"
-            )
-            keep = (~pad_mask.reshape(-1)).to(ce.dtype)
-            weighted = (ce * keep).cpu().numpy()
-            keep_np = keep.cpu().numpy()
-
-            loss_sum += float(weighted.sum())
-            n_tokens += int(keep_np.sum())
-
-            # token index t = h * D + d, so d = t % D selects the joint.
-            dim_ids = np.tile(
-                np.arange(horizon * dim) % dim, batch_size
-            )
-            for d in range(dim):
-                sel = dim_ids == d
-                per_dim_sum[d] += weighted[sel].sum()
-                per_dim_count[d] += int(keep_np[sel].sum())
+                # token index t = h*D + d, so d = t % D selects the joint.
+                dim_ids = np.tile(
+                    np.arange(horizon * dim) % dim, batch_size
+                )
+                for d in range(dim):
+                    sel = dim_ids == d
+                    per_dim_sum[d] += weighted[sel].sum()
+                    per_dim_count[d] += int(keep_np[sel].sum())
+    finally:
+        head.train(prev_modes[0])
+        fusion.train(prev_modes[1])
 
     if action_dim is None:  # empty loader
         return {"val_loss": 0.0, "per_dim_loss": [], "n_tokens": 0}
