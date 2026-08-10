@@ -112,6 +112,41 @@ def test_training_keeps_backbone_eval_and_saves_compact_resume_state(
     torch.testing.assert_close(head.slot, saved_slot)
 
 
+def test_training_continues_after_loader_epoch_boundary(
+    fake_backbone, fake_stats
+):
+    """A reusable finite loader must support more than one epoch."""
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = {
+        "observation.images.up": torch.rand(1, 3, 20, 30),
+        "observation.images.side": torch.rand(1, 3, 20, 30),
+        "observation.state": torch.rand(1, 6),
+        "action": torch.rand(1, 16, 6),
+        "action_is_pad": torch.zeros(1, 16, dtype=torch.bool),
+        "task": ["pick"],
+    }
+    tokenizer = ActionTokenizer(
+        -5 * np.ones(6, dtype=np.float32),
+        5 * np.ones(6, dtype=np.float32),
+    )
+
+    history = train_action_head(
+        head,
+        fake_backbone,
+        [batch],
+        fake_stats,
+        tokenizer,
+        "cpu",
+        total_steps=2,
+        warmup_steps=0,
+        log_every=1,
+    )
+
+    assert [record["step"] for record in history] == [0.0, 1.0]
+
+
 def test_temporal_ensemble_matches_weighted_average():
     ensemble = TemporalEnsembler(decay=math.log(2))
     first = torch.tensor([[0.0], [2.0]])

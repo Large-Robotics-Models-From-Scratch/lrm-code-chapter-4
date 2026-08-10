@@ -8,6 +8,7 @@ import torch.nn as nn
 from ch04.backbone_adapter import (
     causal_mask_with_prefix_padding,
     embed_inputs,
+    position_ids_with_prefix_padding,
     prefix_valid_mask,
 )
 from ch04.constants import ACTION_BINS, SMOLLM_VOCAB, SMOLLM_WIDTH
@@ -68,6 +69,9 @@ class AutoregressiveActionHead(nn.Module):
         hidden = self.backbone.language_backbone(
             inputs_embeds=embeddings,
             attention_mask=mask,
+            position_ids=position_ids_with_prefix_padding(
+                valid, target_bins.shape[1] - 1
+            ),
         ).last_hidden_state
         grid = target_bins.shape[1]
         state_positions = (
@@ -94,7 +98,7 @@ class AutoregressiveActionHead(nn.Module):
         state: torch.Tensor,
         target_bins: torch.Tensor,
         pad_mask: torch.Tensor | None = None,
-        label_smoothing: float = 0.0,
+        label_smoothing: float = 0.05,
     ) -> torch.Tensor:
         logits = self.teacher_forced_logits(
             images, sequence_ids, state, target_bins
@@ -119,26 +123,41 @@ class AutoregressiveActionHead(nn.Module):
     ) -> torch.Tensor:
         """Pedagogical uncached left-to-right decode.
 
-        This deliberately favors clarity over speed. Production systems
-        should replace the repeated prefix passes with the model's KV
-        cache while preserving the same token ordering.
+        Vision and state embeddings are computed once. The language prefix
+        is still replayed for clarity; production systems should replace
+        those passes with the model's KV cache.
         """
         from ch04.decoding import evaluation_mode, sample_logits
 
-        ids = sequence_ids
         generated = []
         if grid_size < 1:
             raise ValueError("grid_size must be positive")
         with evaluation_mode(self):
             valid = prefix_valid_mask(self.backbone, sequence_ids)
+            prefix = embed_inputs(
+                self.backbone, images, sequence_ids, state
+            )
             for index in range(grid_size):
-                embeddings = embed_inputs(self.backbone, images, ids, state)
+                if generated:
+                    action_bins = torch.stack(generated, dim=1)
+                    action_ids = self.token_base + action_bins
+                    action_embeddings = self.backbone.embed_tokens(
+                        action_ids
+                    )
+                    embeddings = torch.cat(
+                        [prefix, action_embeddings.to(prefix.dtype)], dim=1
+                    )
+                else:
+                    embeddings = prefix
                 mask = causal_mask_with_prefix_padding(
                     valid, index, embeddings.dtype
                 )
                 hidden = self.backbone.language_backbone(
                     inputs_embeds=embeddings,
                     attention_mask=mask,
+                    position_ids=position_ids_with_prefix_padding(
+                        valid, index
+                    ),
                 ).last_hidden_state
                 if index == 0:
                     state_positions = (
@@ -163,7 +182,4 @@ class AutoregressiveActionHead(nn.Module):
                     greedy=greedy,
                 )
                 generated.append(bins)
-                ids = torch.cat(
-                    [ids, (self.token_base + bins)[:, None]], dim=1
-                )
         return torch.stack(generated, dim=1)

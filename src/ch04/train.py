@@ -174,7 +174,9 @@ def train_action_head(
         scheduler.load_state_dict(checkpoint["scheduler"])
         step = int(checkpoint["step"]) + 1
     while step < total_steps:
+        saw_batch = False
         for batch in loader:
+            saw_batch = True
             model_inputs = prepare_batch(batch, stats, backbone, device)
             bins, pad = action_targets(batch, stats, tokenizer, device)
             use_amp = torch.device(device).type == "cuda"
@@ -241,11 +243,6 @@ def train_action_head(
             step += 1
             if step >= total_steps:
                 break
-        else:
+        if not saw_batch:
             raise ValueError("loader produced no batches")
     return history
-
-
-def train_parallel_head(*args, **kwargs):
-    """Backward-compatible name for the manuscript's main training path."""
-    return train_action_head(*args, **kwargs)

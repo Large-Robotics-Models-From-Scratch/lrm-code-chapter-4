@@ -57,6 +57,35 @@ def causal_mask_with_prefix_padding(
     return mask
 
 
+def position_ids_with_prefix_padding(
+    prefix_valid: torch.Tensor,
+    extra_tokens: int,
+) -> torch.Tensor:
+    """Assign positions as if right-padded prefix tokens did not exist.
+
+    Action tokens are physically appended after the rectangular padded
+    prefix. Compact position ids keep their RoPE positions immediately after
+    each row's state token, independent of other instructions in the batch.
+    """
+    if prefix_valid.ndim != 2 or prefix_valid.dtype != torch.bool:
+        raise ValueError("prefix_valid must be bool with shape [B, N]")
+    if extra_tokens < 0:
+        raise ValueError("extra_tokens must be non-negative")
+    valid = torch.cat(
+        [
+            prefix_valid,
+            torch.ones(
+                prefix_valid.shape[0],
+                extra_tokens,
+                device=prefix_valid.device,
+                dtype=torch.bool,
+            ),
+        ],
+        dim=1,
+    )
+    return (valid.to(torch.long).cumsum(dim=1) - 1).clamp_min_(0)
+
+
 def embed_inputs(
     backbone,
     images: torch.Tensor,
@@ -101,9 +130,11 @@ def encode_prefix(
     embeddings = embed_inputs(backbone, images, sequence_ids, state)
     valid = prefix_valid_mask(backbone, sequence_ids)
     mask = causal_mask_with_prefix_padding(valid, 0, embeddings.dtype)
+    position_ids = position_ids_with_prefix_padding(valid, 0)
     return backbone.language_backbone(
         inputs_embeds=embeddings,
         attention_mask=mask,
+        position_ids=position_ids,
     ).last_hidden_state
 
 

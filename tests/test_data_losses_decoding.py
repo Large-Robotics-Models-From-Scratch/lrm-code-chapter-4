@@ -44,7 +44,9 @@ def test_prepare_batch_shapes(fake_backbone, fake_stats):
 def test_sequence_padding_follows_state_and_is_masked(fake_backbone):
     from ch04.backbone_adapter import prefix_valid_mask
 
-    ids = _padded_sequence_ids(fake_backbone, [[10], [11, 12, 13]])
+    ids = _padded_sequence_ids(
+        fake_backbone, [[10], [11, 12, 13]], max_text_tokens=3
+    )
     assert ids[0].tolist() == [300, 300, 300, 300, 10, 301, 0, 0]
     assert ids[1].tolist() == [300, 300, 300, 300, 11, 12, 13, 301]
     valid = prefix_valid_mask(fake_backbone, ids)

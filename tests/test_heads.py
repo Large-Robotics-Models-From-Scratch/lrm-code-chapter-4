@@ -1,3 +1,4 @@
+import inspect
 import math
 
 import torch
@@ -41,6 +42,23 @@ def test_parallel_mask_excludes_padded_prefix_keys(fake_backbone):
     assert mask[1, 0, action_query, 3] == 0
 
 
+def test_parallel_positions_ignore_batch_padding(fake_backbone):
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    images = torch.rand(2, 2, 3, 8, 8)
+    ids = torch.tensor(
+        [
+            [300, 300, 300, 300, 10, 301, 0, 0],
+            [300, 300, 300, 300, 10, 11, 12, 301],
+        ]
+    )
+    head(images, ids, torch.rand(2, 6))
+    positions = fake_backbone.language_backbone.last_position_ids
+    assert positions[0, :8].tolist() == [0, 1, 2, 3, 4, 5, 5, 5]
+    assert positions[1, :8].tolist() == list(range(8))
+    assert positions[0, 8] == 6
+    assert positions[1, 8] == 8
+
+
 def test_ar_teacher_forcing_shift(fake_backbone, model_inputs):
     head = AutoregressiveActionHead(fake_backbone, d_embed=12)
     targets = torch.arange(10).repeat(2, 1)
@@ -71,6 +89,13 @@ def test_ar_masked_loss_ignores_padded_targets(fake_backbone, model_inputs):
     assert 0 < loss < 2 * math.log(256)
 
 
+def test_ar_loss_default_matches_manuscript():
+    default = inspect.signature(
+        AutoregressiveActionHead.loss
+    ).parameters["label_smoothing"].default
+    assert default == 0.05
+
+
 def test_ar_decode_conditions_on_previous_bins(fake_backbone, model_inputs):
     head = AutoregressiveActionHead(fake_backbone, d_embed=12)
     captured = []
@@ -82,9 +107,10 @@ def test_ar_decode_conditions_on_previous_bins(fake_backbone, model_inputs):
     finally:
         handle.remove()
     assert bins.shape == (2, 4)
+    assert fake_backbone.vision_encoder.calls == 1
     lengths = [ids.shape[1] for ids in captured]
     start = model_inputs[1].shape[1]
-    assert lengths == [start, start + 1, start + 2, start + 3]
+    assert lengths == [start, 1, 2, 3]
 
 
 def test_ar_custom_bin_count_uses_matching_native_tail(fake_backbone):

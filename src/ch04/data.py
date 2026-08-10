@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 import torch
 
-from ch04.constants import ACTION_HORIZON
+from ch04.constants import ACTION_HORIZON, MAX_INSTRUCTION_TOKENS
 
 DEFAULT_DATASET_ID = "lerobot/svla_so101_pickplace"
 CAMERA_KEYS = (
@@ -163,7 +163,12 @@ def normalize_from_stats(
     stats: Mapping[str, Mapping[str, torch.Tensor]],
     key: str,
 ) -> torch.Tensor:
-    """Chapter 2 z-score normalization without importing its data extra."""
+    """Chapter 2 z-score normalization while preserving device and dtype.
+
+    Chapter 2's public helper is numerically equivalent, but its stats may
+    remain on CPU or use a different dtype.  Chapter 4 moves them alongside
+    ``values`` so action-head training stays device-local.
+    """
     mean = torch.as_tensor(
         stats[key]["mean"], device=values.device, dtype=values.dtype
     )
@@ -216,7 +221,11 @@ def prepare_batch(
 
     tasks = _task_strings(batch.get("task"), images.shape[0])
     token_rows = [backbone.tokenize_instruction(task) for task in tasks]
-    sequence_ids = _padded_sequence_ids(backbone, token_rows).to(device)
+    sequence_ids = _padded_sequence_ids(
+        backbone,
+        token_rows,
+        max_text_tokens=MAX_INSTRUCTION_TOKENS,
+    ).to(device)
     return images, sequence_ids, state
 
 
@@ -253,12 +262,40 @@ def _task_strings(tasks: object, batch_size: int) -> list[str]:
 
 
 def _padded_sequence_ids(
-    backbone, token_rows: list[list[int]]
+    backbone,
+    token_rows: list[list[int]],
+    max_text_tokens: int | None = MAX_INSTRUCTION_TOKENS,
 ) -> torch.Tensor:
+    """Assemble prefixes and right-pad them to a shared/fixed length.
+
+    ``prepare_batch`` uses a fixed text budget so action slots occupy the
+    same physical indices whether an instruction is evaluated alone or in a
+    mixed-length batch. The attention mask and compact position ids exclude
+    the padding from the semantic prefix.
+    """
+    if not token_rows:
+        raise ValueError("token_rows cannot be empty")
+    if max_text_tokens is not None:
+        if max_text_tokens < 1:
+            raise ValueError("max_text_tokens must be positive")
+        too_long = [
+            index
+            for index, tokens in enumerate(token_rows)
+            if len(tokens) > max_text_tokens
+        ]
+        if too_long:
+            raise ValueError(
+                f"instruction rows {too_long} exceed the "
+                f"{max_text_tokens}-token budget"
+            )
     assembled = [
         backbone.build_sequence_ids(tokens) for tokens in token_rows
     ]
-    max_length = max(len(row) for row in assembled)
+    if max_text_tokens is None:
+        max_length = max(len(row) for row in assembled)
+    else:
+        non_text_tokens = len(backbone.build_sequence_ids([]))
+        max_length = non_text_tokens + max_text_tokens
     pad_id = backbone.tokenizer.pad_token_id
     if pad_id is None:
         pad_id = backbone.tokenizer.eos_token_id

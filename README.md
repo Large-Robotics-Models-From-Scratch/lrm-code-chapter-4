@@ -59,10 +59,16 @@ head, constructs episode-disjoint LeRobot action chunks, trains all three
 heads for configurable step counts, and decodes a held-out chunk back to
 the dataset's raw action units.
 
-If a Colab Git clone is interrupted with exit status 128, use **Runtime >
-Disconnect and delete runtime**, reconnect, and rerun the setup cell. The
-cell retries shallow clones three times and prints Git's stderr; no GitHub
-token is required while the chapter repositories are public.
+If a chapter repository is private, create a fine-grained GitHub personal
+access token with read access to that repository, add it under **Colab >
+Secrets** as `GITHUB_TOKEN`, and enable notebook access for the secret. The
+setup cell sends it through Git's process environment, never places it in
+the clone URL, and does not print it. For organization-owned repositories,
+authorize the token for SSO if the organization requires it.
+
+If a clone is interrupted and leaves an incomplete checkout, use **Runtime
+> Disconnect and delete runtime**, reconnect, and rerun the setup cell. The
+cell retries shallow clones three times and prints Git's stderr.
 
 ## Data and model contracts
 
@@ -77,6 +83,9 @@ token is required while the chapter repositories are public.
   the loss before averaging.
 - Chapter 3 receives images `[B, 2, 3, 224, 224]`, sequence ids, and
   normalized state `[B, 6]`, and uses hidden width 576.
+- Prepared instructions have a fixed 64-token budget. Padding is masked and
+  assigned compact position ids, keeping action-token positions independent
+  of the other instruction lengths in a batch.
 - Tokenizer decoding returns normalized actions. `denormalize_from_stats`
   converts those back to raw dataset units for open-loop comparison.
 

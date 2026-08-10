@@ -28,7 +28,6 @@ class TemporalEnsembler:
             raise ValueError("chunk must have shape [H, D]")
         self._chunks.append((self._time, chunk.detach().clone()))
         predictions = []
-        weights = []
         live = []
         for start, candidate in self._chunks:
             offset = self._time - start

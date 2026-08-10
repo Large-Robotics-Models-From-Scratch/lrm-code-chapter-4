@@ -3,7 +3,11 @@
 import torch
 import torch.nn as nn
 
-from ch04.backbone_adapter import embed_inputs, prefix_valid_mask
+from ch04.backbone_adapter import (
+    embed_inputs,
+    position_ids_with_prefix_padding,
+    prefix_valid_mask,
+)
 from ch04.constants import (
     ACTION_BINS,
     ACTION_DIM,
@@ -90,6 +94,9 @@ class ParallelDecodeActionHead(nn.Module):
         hidden = self.backbone.language_backbone(
             inputs_embeds=sequence,
             attention_mask=mask,
+            position_ids=position_ids_with_prefix_padding(
+                valid, self.grid
+            ),
         ).last_hidden_state
         action_hidden = hidden[:, -self.grid :].to(
             self.readout.weight.dtype

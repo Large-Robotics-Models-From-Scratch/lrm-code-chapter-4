@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ch04.constants import ACTION_BINS, ACTION_TOKEN_BASE, SMOLLM_VOCAB
+from ch04.constants import ACTION_BINS, SMOLLM_VOCAB
 
 
 class ActionTokenizer:
@@ -28,8 +28,19 @@ class ActionTokenizer:
             raise ValueError("lo and hi must be matching 1-D arrays")
         if not np.isfinite(self.lo).all() or not np.isfinite(self.hi).all():
             raise ValueError("lo and hi must contain only finite values")
-        if not np.all(self.hi > self.lo):
-            raise ValueError("every hi value must be greater than lo")
+        reversed_dims = np.flatnonzero(self.hi < self.lo)
+        if reversed_dims.size:
+            raise ValueError(
+                "hi must be greater than lo in every dimension; "
+                f"reversed bounds at dimensions {reversed_dims.tolist()}"
+            )
+        stationary_dims = np.flatnonzero(self.hi == self.lo)
+        if stationary_dims.size:
+            raise ValueError(
+                "hi must be greater than lo in every dimension; "
+                f"dimensions {stationary_dims.tolist()} have zero range "
+                "(the corresponding joint may never have moved)"
+            )
         if not isinstance(n_bins, int) or n_bins < 2:
             raise ValueError("n_bins must be an integer greater than one")
         if vocab_size < n_bins:
@@ -67,11 +78,9 @@ class ActionTokenizer:
         if np.any(indices < 0) or np.any(indices >= self.n_bins):
             raise ValueError("ids must lie in [0, n_bins)")
         flat = indices.reshape(-1, self.action_dim)
-        decoded = np.empty(flat.shape, dtype=np.float32)
-        dims = np.arange(self.action_dim)
-        for row, row_ids in enumerate(flat):
-            decoded[row] = self.centers[dims, row_ids]
-        return decoded.reshape(indices.shape)
+        dimensions = np.arange(self.action_dim)[None, :]
+        decoded = self.centers[dimensions, flat]
+        return decoded.astype(np.float32, copy=False).reshape(indices.shape)
 
     def bins_to_tokens(self, bins: np.ndarray) -> np.ndarray:
         """Map bin ids to the reserved tail of the native LM vocab."""
@@ -110,6 +119,8 @@ def fit_action_tokenizer(
     values = np.asarray(actions, dtype=np.float32)
     if values.ndim < 2:
         raise ValueError("actions must be shaped [..., D]")
+    if not np.isfinite(values).all():
+        raise ValueError("actions must contain only finite values")
     if not 0 <= lower_percentile < upper_percentile <= 100:
         raise ValueError(
             "percentiles must satisfy 0 <= lower < upper <= 100"
@@ -119,6 +130,3 @@ def fit_action_tokenizer(
         flat, [lower_percentile, upper_percentile], axis=0
     )
     return ActionTokenizer(lo, hi, n_bins=n_bins)
-
-
-assert ACTION_TOKEN_BASE == 48_896

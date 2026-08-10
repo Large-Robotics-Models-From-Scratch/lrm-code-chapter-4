@@ -10,6 +10,8 @@ def test_real_backbone_parallel_head_contract():
     from ch03 import VLABackbone
 
     from ch04 import ParallelDecodeActionHead
+    from ch04.constants import MAX_INSTRUCTION_TOKENS
+    from ch04.data import _padded_sequence_ids
 
     backbone = VLABackbone().eval()
     head = ParallelDecodeActionHead(backbone).eval()
@@ -22,6 +24,28 @@ def test_real_backbone_parallel_head_contract():
     assert logits.shape == (1, 96, 256)
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
+
+    # A short instruction must produce the same action logits alone or
+    # beside a longer instruction. Compact position ids prevent rectangular
+    # batch padding from changing the short row's RoPE positions.
+    long_text = backbone.tokenize_instruction(
+        "pick up the object and place it carefully on the target"
+    )
+    single_ids = _padded_sequence_ids(
+        backbone, [text], max_text_tokens=MAX_INSTRUCTION_TOKENS
+    )
+    mixed_ids = _padded_sequence_ids(
+        backbone, [text, long_text],
+        max_text_tokens=MAX_INSTRUCTION_TOKENS,
+    )
+    with torch.no_grad():
+        single = head(images, single_ids, state)
+        mixed = head(
+            images.expand(2, -1, -1, -1, -1).contiguous(),
+            mixed_ids,
+            state.expand(2, -1).contiguous(),
+        )
+    torch.testing.assert_close(single[0], mixed[0], atol=2e-5, rtol=2e-5)
 
 
 @pytest.mark.integration

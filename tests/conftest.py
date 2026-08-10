@@ -35,9 +35,13 @@ class FakeLanguageBackbone(nn.Module):
         super().__init__()
         self.projection = nn.Linear(width, width)
         self.last_attention_mask = None
+        self.last_position_ids = None
 
-    def forward(self, inputs_embeds, attention_mask=None):
+    def forward(
+        self, inputs_embeds, attention_mask=None, position_ids=None
+    ):
         self.last_attention_mask = attention_mask
+        self.last_position_ids = position_ids
         return FakeOutput(self.projection(inputs_embeds))
 
 
@@ -45,8 +49,10 @@ class FakeVisionEncoder(nn.Module):
     def __init__(self, width=12):
         super().__init__()
         self.width = width
+        self.calls = 0
 
     def forward(self, images):
+        self.calls += 1
         pooled = images.mean(dim=(1, 2, 3), keepdim=False)
         return pooled[:, None, None].expand(-1, 2, self.width)
 

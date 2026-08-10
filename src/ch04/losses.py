@@ -6,13 +6,6 @@ import torch
 import torch.nn.functional as F
 
 
-def flatten_action_grid(grid: torch.Tensor) -> torch.Tensor:
-    """Flatten ``[B, H, D]`` to timestep-major ``[B, H * D]``."""
-    if grid.ndim != 3:
-        raise ValueError("action grid must have shape [B, H, D]")
-    return grid.reshape(grid.shape[0], -1)
-
-
 def expand_timestep_pad_mask(
     pad_mask: torch.Tensor,
     action_dim: int,
