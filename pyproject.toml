@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lrm-ch04"
 version = "0.1.0"
-description = "Chapter 4 code for 'Build a Large Robot Model (From Scratch)' (Manning): discrete behavior cloning — action tokenizer + parallel baseline head + autoregressive action head on the Chapter 3 VLA backbone"
+description = "Discrete behavior cloning for Chapter 4 of Build a Large Robot Model (From Scratch)"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 authors = [
@@ -30,7 +30,8 @@ data = [
 sim = [
     "mani-skill==3.0.1",
 ]
-# Chapter 3 backbone, consumed by the action heads.
+# Chapter 3 backbone, consumed by the action heads. For local development,
+# install the sibling repository with `pip install -e ../lrm-code-chapter-3`.
 backbone = [
     "lrm-ch03",
 ]

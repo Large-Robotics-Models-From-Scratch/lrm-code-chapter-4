@@ -1,110 +1,85 @@
-# lrm-code-chapter-4
+# Chapter 4: Discrete Behavior Cloning
 
-Companion code for **Chapter 4** of *Build a Large Robot Model (From Scratch)* (Manning).
+Working code for Chapter 4 of *Build a Large Robot Model (From
+Scratch)*. The implementation follows the current manuscript in
+`lrm-book/chapter_4/manuscript/chapter_4.md`; older Chapter 4 plans are
+not design authorities.
 
-This chapter adds the **action head** on top of the Chapter 3 VLA backbone and trains it with **discrete behavior cloning**. Continuous robot actions are quantized into tokens, those tokens are reserved inside the language model's existing vocabulary, and an **autoregressive** head decodes an action chunk one token at a time through the same causal fusion transformer that already carries image, language, and state.
+The repository turns Chapter 3's fused VLA representation into an
+SO-101 action policy trained from Chapter 2's demonstrations. It includes
+the manuscript's three action-head designs:
 
-## The three-act arc
+- `FactorizedActionHead`: a one-shot product-of-marginals baseline.
+- `AutoregressiveActionHead`: exact left-to-right conditioning with a
+  teacher-forced training path and a clear uncached reference decoder.
+- `ParallelDecodeActionHead`: the manuscript's one-pass training and
+  evaluation path, with bidirectional attention inside the action grid.
 
-1. **MSE collapses.** Regressing continuous actions averages multiple valid demonstrations into a single invalid one (the multimodal trap).
-2. **Per-dimension categorical fixes within-joint multimodality.** Discretize each action dimension into 256 bins and predict a distribution — but a *parallel* head samples every dimension independently and produces incoherent joint actions like `(close-gripper, move-away)`.
-3. **Autoregressive fixes inter-dimension coherence.** Decode the chunk left to right so each token is conditioned on the tokens already emitted. This is the head the chapter ships.
+## Repository map
 
+```text
+src/ch04/
+├── action_tokenizer.py          # Q01/Q99 uniform bins + LM vocab reuse
+├── factorized_action_head.py    # Listing 4.2
+├── autoregressive_action_head.py# Listing 4.3
+├── parallel_action_head.py      # Listing 4.4
+├── backbone_adapter.py          # pre-transformer Chapter 3 splice
+├── data.py                      # episode splits, chunks + prepare_batch
+├── losses.py                    # grid shaping + masked smoothed CE
+├── train.py                     # all-head training + compact checkpoints
+├── decoding.py                  # temperature/top-p + open-loop MAE
+├── execution.py                 # chunk schedule + temporal ensemble
+├── diagnostics.py               # section 4.6 plots and mismatch metric
+└── exercises.py                 # multimodal MSE-collapse exercise
+notebooks/ch04.ipynb             # complete Colab walkthrough
 ```
-image  ─┐
-text   ─┤
-state  ─┼─▶ VLABackbone (Ch 3, frozen-ish)  ─▶  hidden  ─▶  ActionHead  ─▶  a_1 … a_{H·D}
-actions ┘        causal fusion transformer                  (AR decode)     (token ids)
-```
 
-## What you build
+## Local setup
 
-| Module | PR | Role |
-|---|---|---|
-| `action_tokenizer.py` | **PR 1** | Uniform Q01/Q99 quantizer; maps bins to reserved LM token ids (256 **shared** across dims) |
-| `parallel_action_head.py` | PR 2 | One-shot categorical head — the foil that exposes inter-dim incoherence |
-| `autoregressive_action_head.py` | PR 3 | The shipped head: left-to-right decode with KV-cache |
-| `dataloader.py` | PR 4 | Action-chunk batching + teacher forcing |
-| `train.py` | PR 5 | Cross-entropy training loop with label smoothing |
-| `rollout.py` | PR 6 | Constrained decoding + sim eval on `PickCubeSO100-v1` |
-| diagnostics / figures | PR 7 | Joint-coordination plots, latency reconciliation |
-
-`main` carries only the scaffold; each module lands in its own PR (same convention as Ch 2 / Ch 3).
-
-## Locked architecture (Ch 4 plan)
-
-| Component | Choice |
-|---|---|
-| Tokenizer | Uniform, 256 bins, Q01/Q99 range per dimension |
-| Vocabulary | Last 256 SmolLM ids reserved as `<act_0>…<act_255>`, **shared across all 6 dimensions** (position disambiguates) — no `resize_token_embeddings`, no `add_tokens` |
-| Action head | Autoregressive, 512→256 projection, teacher forcing at train, constrained decode at inference |
-| Loss | Per-token categorical cross-entropy + label smoothing |
-| Robot | SO-101 (D = 6: 5 arm joints + gripper) |
-| Chunk | H = 16 |
-| Backbone | `ch03.VLABackbone` (hidden dim 512, native SmolLM vocab 49,152) |
-| Sim eval | `PickCubeSO100-v1` |
-
-## Setup
+Use Python 3.12 and install the sibling chapter packages first:
 
 ```bash
-git clone git@github.com:Large-Robotics-Models-From-Scratch/lrm-code-chapter-4.git
-cd lrm-code-chapter-4
-pip install -e ".[dev]"          # tokenizer + tests only
-pip install -e ".[dev,data,sim,backbone]"   # full chapter
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e "../lrm-code-chapter-2[data]"
+pip install -e ../lrm-code-chapter-3
+pip install -e ".[dev,data]"
 ```
 
-`backbone` pulls `lrm-ch03` so the action head can import `ch03.VLABackbone`.
-
-### Tests
+Run the fast suite:
 
 ```bash
-pytest -m "not integration"   # unit tests; what CI runs
-pytest -m integration         # downloads HF models + sim eval
+pytest -m "not integration"
+ruff check src tests
 ```
 
-### Pre-commit hooks
+The [Chapter 4 Colab](notebooks/ch04.ipynb) installs all three chapter
+repositories, demonstrates MSE collapse, fits the tokenizer, runs every
+head, constructs episode-disjoint LeRobot action chunks, trains all three
+heads for configurable step counts, and decodes a held-out chunk back to
+the dataset's raw action units.
 
-```bash
-pre-commit install
-```
+If a Colab Git clone is interrupted with exit status 128, use **Runtime >
+Disconnect and delete runtime**, reconnect, and rerun the setup cell. The
+cell retries shallow clones three times and prints Git's stderr; no GitHub
+token is required while the chapter repositories are public.
 
-Installs `nbstripout` (clears notebook outputs) and `ruff` (lint + autofix, line length 76).
+## Data and model contracts
 
-## Repository layout
+- Actions are z-score normalized with Chapter 2 statistics before the
+  tokenizer is fit or called.
+- The tokenizer clips each dimension to q01/q99, divides it into 256
+  bins, and returns NumPy `int64` bin ids.
+- Bins reuse native SmolLM2 ids `48896..49151`; no language-model
+  vocabulary rows are added.
+- One label is `[H, D] = [16, 6]`, flattened timestep-major to 96 action
+  tokens. Padding is repeated across the six controls and excluded from
+  the loss before averaging.
+- Chapter 3 receives images `[B, 2, 3, 224, 224]`, sequence ids, and
+  normalized state `[B, 6]`, and uses hidden width 576.
+- Tokenizer decoding returns normalized actions. `denormalize_from_stats`
+  converts those back to raw dataset units for open-loop comparison.
 
-```
-lrm-code-chapter-4/
-├── README.md
-├── CLAUDE.md                       # Project guide for Claude Code
-├── pyproject.toml
-├── .lrm-agents.yml
-├── .pre-commit-config.yaml
-├── .github/workflows/ci.yml
-├── src/ch04/
-│   ├── __init__.py
-│   └── action_tokenizer.py         # PR 1 — uniform quantizer + reserved vocab map
-├── docs/
-│   └── chapter_4_plan.md           # Synced copy of the book chapter's structure/plan
-└── tests/
-    ├── conftest.py
-    ├── test_smoke.py
-    ├── test_action_tokenizer.py
-    └── test_guardrails.py
-```
-
-## Built on
-
-- **Chapter 3 repo**: [`lrm-code-chapter-3`](https://github.com/Large-Robotics-Models-From-Scratch/lrm-code-chapter-3) — `from ch03 import VLABackbone`
-- **Chapter 2 repo**: [`lrm-code-chapter-2`](https://github.com/Large-Robotics-Models-From-Scratch/lrm-code-chapter-2) — dataloader, normalization stats
-
-## Hand-off note (vocab convention)
-
-Chapter 3's README/CLAUDE describe the action vocabulary as "1,536 IDs (256 bins × 6 dims)" plus `resize_token_embeddings`. The manuscript and the OpenVLA recipe instead reserve **256 ids shared across all dimensions** (position in the decoded sequence disambiguates which joint), with **no** vocab expansion. This repo implements the manuscript-faithful 256-shared convention. The Ch 3 docs need a one-line correction — flagged for the Ch 3 owner.
-
-## Forward pointer
-
-The autoregressive factorization here is also the on-ramp to **world action models**, an emerging LRM class that tokenizes future observations alongside actions. Ch 4 sets up that interface without building it.
-
-## License
-
-Apache 2.0.
+The open-loop notebook is not a physical-robot deployment recipe. The
+dataset's command units and any simulator or hardware control mode must
+be converted and safety-checked explicitly before execution.
