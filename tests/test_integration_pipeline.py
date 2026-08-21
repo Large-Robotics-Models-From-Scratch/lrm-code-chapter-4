@@ -9,43 +9,57 @@ import torch
 def test_real_backbone_parallel_head_contract():
     from ch03 import VLABackbone
 
-    from ch04 import ParallelDecodeActionHead
-    from ch04.constants import MAX_INSTRUCTION_TOKENS
-    from ch04.data import _padded_sequence_ids
+    from ch04 import AutoregressiveActionHead, ParallelDecodeActionHead
+    from ch04.train import make_optimizer
 
     backbone = VLABackbone().eval()
+    backbone.language_backbone.set_attn_implementation("eager")
     head = ParallelDecodeActionHead(backbone).eval()
-    text = backbone.tokenize_instruction("pick up the object")
-    ids = torch.tensor([backbone.build_sequence_ids(text)])
+    text = backbone.tokenizer(
+        ["pick up the object"], padding=True, return_tensors="pt"
+    )
     images = torch.rand(1, 2, 3, 224, 224)
     state = torch.rand(1, 6)
     with torch.no_grad():
-        logits = head(images, ids, state)
+        logits = head(
+            images,
+            text.input_ids,
+            state,
+            text.attention_mask.bool(),
+        )
     assert logits.shape == (1, 96, 256)
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
 
-    # A short instruction must produce the same action logits alone or
-    # beside a longer instruction. Compact position ids prevent rectangular
-    # batch padding from changing the short row's RoPE positions.
-    long_text = backbone.tokenize_instruction(
-        "pick up the object and place it carefully on the target"
+    assert backbone.language_backbone.config.vocab_size == 49_152
+    assert (
+        backbone.language_backbone.get_input_embeddings().num_embeddings
+        == 49_152
     )
-    single_ids = _padded_sequence_ids(
-        backbone, [text], max_text_tokens=MAX_INSTRUCTION_TOKENS
-    )
-    mixed_ids = _padded_sequence_ids(
-        backbone, [text, long_text],
-        max_text_tokens=MAX_INSTRUCTION_TOKENS,
-    )
+
+    autoregressive = AutoregressiveActionHead(
+        backbone, horizon=1, action_dim=2
+    ).eval()
     with torch.no_grad():
-        single = head(images, single_ids, state)
-        mixed = head(
-            images.expand(2, -1, -1, -1, -1).contiguous(),
-            mixed_ids,
-            state.expand(2, -1).contiguous(),
+        generated = autoregressive.generate(
+            images,
+            text.input_ids,
+            state,
+            text.attention_mask.bool(),
         )
-    torch.testing.assert_close(single[0], mixed[0], atol=2e-5, rtol=2e-5)
+    assert generated.shape == (1, 1, 2)
+    assert generated.dtype == torch.long
+    optimizer = make_optimizer(head, backbone)
+    optimized = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    assert all(
+        id(parameter) not in optimized
+        for parameter in backbone.vision_encoder.siglip.parameters()
+    )
+    assert id(backbone.vision_encoder.project.weight) in optimized
 
 
 @pytest.mark.integration

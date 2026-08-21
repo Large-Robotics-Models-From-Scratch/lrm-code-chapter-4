@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ch04.constants import ACTION_BINS, SMOLLM_VOCAB
+from ch04.constants import ACTION_BINS
 
 
 class ActionTokenizer:
@@ -12,7 +12,8 @@ class ActionTokenizer:
 
     The tokenizer is intentionally NumPy-only. It operates in the
     Chapter 2 z-score-normalized action space and maps bins onto the
-    final ``n_bins`` ids of SmolLM's native vocabulary.
+    standalone bin ids. The optional autoregressive head owns a separate
+    action embedding table, so language vocabulary ids are never reused.
     """
 
     def __init__(
@@ -20,7 +21,6 @@ class ActionTokenizer:
         lo: np.ndarray,
         hi: np.ndarray,
         n_bins: int = ACTION_BINS,
-        vocab_size: int = SMOLLM_VOCAB,
     ) -> None:
         self.lo = np.asarray(lo, dtype=np.float32)
         self.hi = np.asarray(hi, dtype=np.float32)
@@ -43,13 +43,10 @@ class ActionTokenizer:
             )
         if not isinstance(n_bins, int) or n_bins < 2:
             raise ValueError("n_bins must be an integer greater than one")
-        if vocab_size < n_bins:
-            raise ValueError("vocab_size must be at least n_bins")
 
         self.n_bins = n_bins
-        self.vocab_size = vocab_size
-        self.token_base = vocab_size - n_bins
         width = (self.hi - self.lo) / n_bins
+        self.width = width
         offsets = np.arange(n_bins, dtype=np.float32) + 0.5
         self.centers = self.lo[:, None] + width[:, None] * offsets
 
@@ -57,6 +54,15 @@ class ActionTokenizer:
     def action_dim(self) -> int:
         """Number of independently quantized control dimensions."""
         return int(self.lo.size)
+
+    @classmethod
+    def fit(
+        cls,
+        normalized_actions: np.ndarray,
+        n_bins: int = ACTION_BINS,
+    ) -> "ActionTokenizer":
+        """Fit q01/q99 bounds using normalized training actions."""
+        return fit_action_tokenizer(normalized_actions, n_bins=n_bins)
 
     def encode(self, action: np.ndarray) -> np.ndarray:
         """Map actions shaped ``[..., D]`` to bin ids as ``int64``."""
@@ -81,26 +87,6 @@ class ActionTokenizer:
         dimensions = np.arange(self.action_dim)[None, :]
         decoded = self.centers[dimensions, flat]
         return decoded.astype(np.float32, copy=False).reshape(indices.shape)
-
-    def bins_to_tokens(self, bins: np.ndarray) -> np.ndarray:
-        """Map bin ids to the reserved tail of the native LM vocab."""
-        values = np.asarray(bins)
-        if not np.issubdtype(values.dtype, np.integer):
-            raise TypeError("bins must have an integer dtype")
-        if np.any(values < 0) or np.any(values >= self.n_bins):
-            raise ValueError("bins must lie in [0, n_bins)")
-        return (values.astype(np.int64) + self.token_base).astype(np.int64)
-
-    def tokens_to_bins(self, tokens: np.ndarray) -> np.ndarray:
-        """Invert :meth:`bins_to_tokens`."""
-        values = np.asarray(tokens)
-        if not np.issubdtype(values.dtype, np.integer):
-            raise TypeError("tokens must have an integer dtype")
-        if np.any(values < self.token_base) or np.any(
-            values >= self.vocab_size
-        ):
-            raise ValueError("tokens are outside the reserved action range")
-        return (values.astype(np.int64) - self.token_base).astype(np.int64)
 
     def _check_last_dim(self, values: np.ndarray, name: str) -> None:
         if values.ndim == 0 or values.shape[-1] != self.action_dim:

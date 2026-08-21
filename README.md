@@ -1,8 +1,9 @@
 # Chapter 4: Discrete Behavior Cloning
 
 Working code for Chapter 4 of *Build a Large Robot Model (From
-Scratch)*. The implementation follows the current manuscript in
-`lrm-book/chapter_4/manuscript/chapter_4.md`; older Chapter 4 plans are
+Scratch)*. The implementation follows the current
+[Chapter 4 manuscript](https://docs.google.com/document/d/1UIVpB6hTNta-9RRYwaHuFSvmFnjy__NnYrs1zn_fQDw/edit)
+and the live Chapter 3 hand-off contract; older local Chapter 4 drafts are
 not design authorities.
 
 The repository turns Chapter 3's fused VLA representation into an
@@ -11,7 +12,8 @@ the manuscript's three action-head designs:
 
 - `FactorizedActionHead`: a one-shot product-of-marginals baseline.
 - `AutoregressiveActionHead`: exact left-to-right conditioning with a
-  teacher-forced training path and a clear uncached reference decoder.
+  teacher-forced training path, separate action embeddings, and KV-cached
+  generation.
 - `ParallelDecodeActionHead`: the manuscript's one-pass training and
   evaluation path, with bidirectional attention inside the action grid.
 
@@ -19,14 +21,14 @@ the manuscript's three action-head designs:
 
 ```text
 src/ch04/
-├── action_tokenizer.py          # Q01/Q99 uniform bins + LM vocab reuse
+├── action_tokenizer.py          # Q01/Q99 uniform per-control bins
 ├── factorized_action_head.py    # Listing 4.2
-├── autoregressive_action_head.py# Listing 4.3
-├── parallel_action_head.py      # Listing 4.4
-├── backbone_adapter.py          # pre-transformer Chapter 3 splice
+├── autoregressive_action_head.py# Listings 4.3–4.4
+├── parallel_action_head.py      # Listing 4.5
+├── backbone_adapter.py          # helpers for Ch3's two-stage API
 ├── data.py                      # episode splits, chunks + prepare_batch
 ├── losses.py                    # grid shaping + masked smoothed CE
-├── train.py                     # all-head training + compact checkpoints
+├── train.py                     # two-LR training + held-out checkpoints
 ├── decoding.py                  # temperature/top-p + open-loop MAE
 ├── execution.py                 # chunk schedule + temporal ensemble
 ├── diagnostics.py               # section 4.6 plots and mismatch metric
@@ -55,9 +57,9 @@ ruff check src tests
 
 The [Chapter 4 Colab](notebooks/ch04.ipynb) installs all three chapter
 repositories, demonstrates MSE collapse, fits the tokenizer, runs every
-head, constructs episode-disjoint LeRobot action chunks, trains all three
-heads for configurable step counts, and decodes a held-out chunk back to
-the dataset's raw action units.
+head, constructs episode-disjoint LeRobot action chunks, trains the shipped
+parallel policy for a configurable step count, and evaluates decoded held-out
+chunks in the dataset's raw action units.
 
 If a chapter repository is private, create a fine-grained GitHub personal
 access token with read access to that repository, add it under **Colab >
@@ -76,16 +78,21 @@ cell retries shallow clones three times and prints Git's stderr.
   tokenizer is fit or called.
 - The tokenizer clips each dimension to q01/q99, divides it into 256
   bins, and returns NumPy `int64` bin ids.
-- Bins reuse native SmolLM2 ids `48896..49151`; no language-model
-  vocabulary rows are added.
+- SmolLM2 remains at its native 49,152-row vocabulary. The optional AR
+  head uses a separate 256-entry action embedding table indexed by bin id.
 - One label is `[H, D] = [16, 6]`, flattened timestep-major to 96 action
   tokens. Padding is repeated across the six controls and excluded from
   the loss before averaging.
-- Chapter 3 receives images `[B, 2, 3, 224, 224]`, sequence ids, and
-  normalized state `[B, 6]`, and uses hidden width 576.
-- Prepared instructions have a fixed 64-token budget. Padding is masked and
-  assigned compact position ids, keeping action-token positions independent
-  of the other instruction lengths in a batch.
+- Chapter 3 receives raw `[0,1]` images `[B,2,3,H,W]`, padded native text
+  ids, a text attention mask, and normalized state `[B,6]`. It owns image
+  resizing, direct multimodal concatenation, and compact position ids.
+- The parallel head extends Chapter 3's observation prefix with one learned
+  576-wide slot per action-grid cell and contextualizes the complete block
+  with a custom bidirectional action mask.
+- Training keeps SigLIP frozen while updating the Chapter 3 projection,
+  state encoder, language backbone, and action head at separate learning
+  rates. Checkpoints include the full policy, normalization statistics,
+  tokenizer bounds, optimizer/scheduler state, and held-out loss.
 - Tokenizer decoding returns normalized actions. `denormalize_from_stats`
   converts those back to raw dataset units for open-loop comparison.
 

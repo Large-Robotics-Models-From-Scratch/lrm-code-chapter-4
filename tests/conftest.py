@@ -1,5 +1,7 @@
 """Shared fixtures for Chapter 4 unit tests."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
@@ -26,29 +28,42 @@ def fake_stats():
 
 
 class FakeOutput:
-    def __init__(self, hidden):
+    def __init__(self, hidden, past_key_values=None):
         self.last_hidden_state = hidden
+        self.past_key_values = past_key_values
 
 
 class FakeLanguageBackbone(nn.Module):
     def __init__(self, width=12):
         super().__init__()
         self.projection = nn.Linear(width, width)
+        self.embedding = nn.Embedding(512, width)
         self.last_attention_mask = None
         self.last_position_ids = None
 
+    def get_input_embeddings(self):
+        return self.embedding
+
     def forward(
-        self, inputs_embeds, attention_mask=None, position_ids=None
+        self,
+        inputs_embeds,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        cache_position=None,
+        use_cache=False,
     ):
         self.last_attention_mask = attention_mask
         self.last_position_ids = position_ids
-        return FakeOutput(self.projection(inputs_embeds))
+        cache = object() if use_cache else past_key_values
+        return FakeOutput(self.projection(inputs_embeds), cache)
 
 
 class FakeVisionEncoder(nn.Module):
     def __init__(self, width=12):
         super().__init__()
         self.width = width
+        self.project = nn.Linear(width, width)
         self.calls = 0
 
     def forward(self, images):
@@ -68,36 +83,73 @@ class FakeStateEncoder(nn.Module):
 
 class FakeTokenizer:
     pad_token_id = 0
-    eos_token_id = 1
+    eos_token_id = 0
+
+    def __call__(self, tasks, padding=True, return_tensors="pt"):
+        rows = [
+            [10 + len(word) % 7 for word in task.split()]
+            for task in tasks
+        ]
+        width = max(len(row) for row in rows)
+        ids = torch.zeros(len(rows), width, dtype=torch.long)
+        mask = torch.zeros_like(ids)
+        for index, row in enumerate(rows):
+            ids[index, : len(row)] = torch.tensor(row)
+            mask[index, : len(row)] = 1
+        return SimpleNamespace(input_ids=ids, attention_mask=mask)
 
 
 class FakeBackbone(nn.Module):
     def __init__(self, width=12):
         super().__init__()
         self.width = width
-        self.image_id = 300
-        self.state_id = 301
-        self.embed_tokens = nn.Embedding(49_154, width)
         self.vision_encoder = FakeVisionEncoder(width)
         self.state_encoder = FakeStateEncoder(width)
         self.language_backbone = FakeLanguageBackbone(width)
         self.tokenizer = FakeTokenizer()
-        self.seen_ids = []
 
-    def tokenize_instruction(self, instruction):
-        return [10 + len(instruction) % 3, 11]
+    def embed_inputs(
+        self, images, input_ids, state, text_attention_mask=None
+    ):
+        batch_size = images.shape[0]
+        image = self.vision_encoder(images.flatten(0, 1)).reshape(
+            batch_size, 4, self.width
+        )
+        text = self.language_backbone.get_input_embeddings()(input_ids)
+        state_embedding = self.state_encoder(state)
+        embeddings = torch.cat([image, text, state_embedding], dim=1)
+        if text_attention_mask is None:
+            text_attention_mask = torch.ones_like(input_ids)
+        valid = torch.cat(
+            [
+                torch.ones(
+                    batch_size, 4, dtype=torch.bool, device=images.device
+                ),
+                text_attention_mask.bool(),
+                torch.ones(
+                    batch_size, 1, dtype=torch.bool, device=images.device
+                ),
+            ],
+            dim=1,
+        )
+        positions = valid.long().cumsum(1) - 1
+        positions.masked_fill_(~valid, 0)
+        return embeddings, valid, positions
 
-    def build_sequence_ids(self, text_ids):
-        return [self.image_id] * 4 + text_ids + [self.state_id]
-
-    def forward(self, images, sequence_ids, state):
-        self.seen_ids.append(sequence_ids.detach().clone())
-        from ch04.backbone_adapter import embed_inputs
-
-        embeddings = embed_inputs(self, images, sequence_ids, state)
+    def contextualize(self, embeddings, attention_mask, position_ids):
         return self.language_backbone(
-            inputs_embeds=embeddings
+            inputs_embeds=embeddings,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
         ).last_hidden_state
+
+    def forward(
+        self, images, input_ids, state, text_attention_mask=None
+    ):
+        embeddings, valid, positions = self.embed_inputs(
+            images, input_ids, state, text_attention_mask
+        )
+        return self.contextualize(embeddings, valid, positions)
 
 
 @pytest.fixture
@@ -108,7 +160,7 @@ def fake_backbone():
 @pytest.fixture
 def model_inputs(fake_backbone):
     images = torch.rand(2, 2, 3, 8, 8)
-    rows = [fake_backbone.build_sequence_ids([10, 11])] * 2
-    sequence_ids = torch.tensor(rows)
+    input_ids = torch.tensor([[10, 11], [10, 11]])
     state = torch.rand(2, 6)
-    return images, sequence_ids, state
+    text_attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    return images, input_ids, state, text_attention_mask

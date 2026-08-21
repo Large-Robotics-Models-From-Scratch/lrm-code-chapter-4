@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import random
 from collections.abc import Mapping, Sequence
 
 import numpy as np
 import torch
 
-from ch04.constants import ACTION_HORIZON, MAX_INSTRUCTION_TOKENS
+from ch04.constants import ACTION_HORIZON
 
 DEFAULT_DATASET_ID = "lerobot/svla_so101_pickplace"
 CAMERA_KEYS = (
@@ -52,25 +51,29 @@ def make_chunked_dataloaders(
     horizon: int = ACTION_HORIZON,
     batch_size: int = 32,
     validation_fraction: float = 0.1,
-    seed: int = 7,
+    seed: int | None = None,
     num_workers: int = 0,
 ):
-    """Return episode-disjoint train/validation loaders and Ch2 stats."""
+    """Return episode-disjoint loaders and training-episode statistics."""
     if horizon < 1:
         raise ValueError("horizon must be positive")
     if not 0.0 < validation_fraction < 1.0:
         raise ValueError("validation_fraction must lie in (0, 1)")
-    from ch02 import make_pickplace_dataloader
-    from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+    from lerobot.datasets.lerobot_dataset import (
+        LeRobotDataset,
+        LeRobotDatasetMetadata,
+    )
 
-    _, stats = make_pickplace_dataloader(dataset_id, batch_size=1)
     metadata = LeRobotDatasetMetadata(dataset_id)
     if metadata.total_episodes < 2:
         raise ValueError(
             "episode-level validation needs at least two episodes"
         )
     episodes = list(range(metadata.total_episodes))
-    random.Random(seed).shuffle(episodes)
+    if seed is not None:
+        import random
+
+        random.Random(seed).shuffle(episodes)
     n_validation = max(
         1,
         min(
@@ -78,8 +81,10 @@ def make_chunked_dataloaders(
             round(len(episodes) * validation_fraction),
         ),
     )
-    validation_episodes = sorted(episodes[:n_validation])
-    train_episodes = sorted(episodes[n_validation:])
+    validation_episodes = sorted(episodes[-n_validation:])
+    train_episodes = sorted(episodes[:-n_validation])
+    train_frames = LeRobotDataset(dataset_id, episodes=train_episodes)
+    stats = _compute_stats_from_frame_columns(train_frames)
     train_loader = _make_chunk_loader(
         dataset_id,
         metadata.fps,
@@ -136,9 +141,16 @@ def collect_normalized_actions(
     """Collect valid normalized actions from a chunk loader.
 
     This is intended for tokenizer calibration on training episodes only.
-    Overlapping chunks repeat interior timesteps but never mix validation
-    episodes into the percentile fit.
+    With ``max_batches=None`` and a LeRobot loader, it reads the underlying
+    Arrow action column once, avoiding both repeated chunk timesteps and
+    video decoding. An integer bound keeps the loader-based smoke path.
     """
+    frame_dataset = getattr(loader.dataset, "hf_dataset", None)
+    if max_batches is None and frame_dataset is not None:
+        actions = _stack_frame_column(frame_dataset, "action")
+        normalized = normalize_from_stats(actions, stats, "action")
+        return normalized.cpu().numpy()
+
     collected = []
     for index, batch in enumerate(loader):
         actions = torch.as_tensor(batch["action"]).float()
@@ -156,6 +168,35 @@ def collect_normalized_actions(
     if not collected:
         raise ValueError("loader produced no actions for tokenizer fitting")
     return np.concatenate(collected, axis=0)
+
+
+def _stack_frame_column(dataset, key: str) -> torch.Tensor:
+    """Read an Arrow control column without touching video streams."""
+    values = dataset[key]
+    if isinstance(values, torch.Tensor):
+        return values.float()
+    return torch.stack(
+        [torch.as_tensor(value).float() for value in values]
+    )
+
+
+def _compute_stats_from_frame_columns(dataset):
+    """Compute training-only Ch2 statistics without decoding images."""
+    frame_dataset = getattr(dataset, "hf_dataset", None)
+    if frame_dataset is None:
+        from ch02 import compute_stats
+
+        return compute_stats(dataset)
+    result = {}
+    for key in ("observation.state", "action"):
+        values = _stack_frame_column(frame_dataset, key)
+        result[key] = {
+            "mean": values.mean(0),
+            "std": values.std(0),
+            "min": values.min(0).values,
+            "max": values.max(0).values,
+        }
+    return result
 
 
 def normalize_from_stats(
@@ -196,10 +237,20 @@ def denormalize_from_stats(
 def prepare_batch(
     batch: Mapping[str, object],
     stats: Mapping[str, Mapping[str, torch.Tensor]],
-    backbone,
     device: torch.device | str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build ``(images, sequence_ids, normalized_state)`` for Ch3."""
+    backbone,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Build the four positional inputs accepted by Chapter 4 heads.
+
+    Chapter 3 now owns image resizing and multimodal sequence assembly.
+    Chapter 4 therefore supplies raw two-camera frames, padded text ids,
+    normalized state, and the text validity mask.
+    """
     camera_tensors = []
     for key in CAMERA_KEYS:
         if key not in batch:
@@ -209,10 +260,7 @@ def prepare_batch(
             camera = camera.float() / 255.0
         else:
             camera = camera.float()
-        from ch03 import preprocess_image
-
-        camera = preprocess_image(camera).clamp(0.0, 1.0)
-        camera_tensors.append(camera)
+        camera_tensors.append(camera.clamp(0.0, 1.0))
     images = torch.stack(camera_tensors, dim=1).to(device)
 
     raw_state = torch.as_tensor(batch["observation.state"]).float()
@@ -220,13 +268,14 @@ def prepare_batch(
     state = state.to(device)
 
     tasks = _task_strings(batch.get("task"), images.shape[0])
-    token_rows = [backbone.tokenize_instruction(task) for task in tasks]
-    sequence_ids = _padded_sequence_ids(
-        backbone,
-        token_rows,
-        max_text_tokens=MAX_INSTRUCTION_TOKENS,
-    ).to(device)
-    return images, sequence_ids, state
+    text = backbone.tokenizer(
+        tasks,
+        padding=True,
+        return_tensors="pt",
+    )
+    input_ids = text.input_ids.to(device)
+    text_attention_mask = text.attention_mask.bool().to(device)
+    return images, input_ids, state, text_attention_mask
 
 
 def action_targets(
@@ -259,47 +308,3 @@ def _task_strings(tasks: object, batch_size: int) -> list[str]:
     if isinstance(tasks, Sequence) and len(tasks) == batch_size:
         return [str(task) for task in tasks]
     raise ValueError("task must be one string per batch row")
-
-
-def _padded_sequence_ids(
-    backbone,
-    token_rows: list[list[int]],
-    max_text_tokens: int | None = MAX_INSTRUCTION_TOKENS,
-) -> torch.Tensor:
-    """Assemble prefixes and right-pad them to a shared/fixed length.
-
-    ``prepare_batch`` uses a fixed text budget so action slots occupy the
-    same physical indices whether an instruction is evaluated alone or in a
-    mixed-length batch. The attention mask and compact position ids exclude
-    the padding from the semantic prefix.
-    """
-    if not token_rows:
-        raise ValueError("token_rows cannot be empty")
-    if max_text_tokens is not None:
-        if max_text_tokens < 1:
-            raise ValueError("max_text_tokens must be positive")
-        too_long = [
-            index
-            for index, tokens in enumerate(token_rows)
-            if len(tokens) > max_text_tokens
-        ]
-        if too_long:
-            raise ValueError(
-                f"instruction rows {too_long} exceed the "
-                f"{max_text_tokens}-token budget"
-            )
-    assembled = [
-        backbone.build_sequence_ids(tokens) for tokens in token_rows
-    ]
-    if max_text_tokens is None:
-        max_length = max(len(row) for row in assembled)
-    else:
-        non_text_tokens = len(backbone.build_sequence_ids([]))
-        max_length = non_text_tokens + max_text_tokens
-    pad_id = backbone.tokenizer.pad_token_id
-    if pad_id is None:
-        pad_id = backbone.tokenizer.eos_token_id
-    if pad_id is None:
-        pad_id = 0
-    rows = [row + [pad_id] * (max_length - len(row)) for row in assembled]
-    return torch.tensor(rows, dtype=torch.long)

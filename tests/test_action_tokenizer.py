@@ -36,14 +36,9 @@ def test_q01_q99_fit():
     np.testing.assert_allclose(
         tokenizer.hi, np.percentile(values, 99, axis=0)
     )
-
-
-def test_native_vocab_mapping_is_exact(action_bounds):
-    tokenizer = ActionTokenizer(*action_bounds)
-    bins = np.array([0, 1, 127, 255], dtype=np.int64)
-    tokens = tokenizer.bins_to_tokens(bins)
-    assert tokens.tolist() == [48896, 48897, 49023, 49151]
-    np.testing.assert_array_equal(tokenizer.tokens_to_bins(tokens), bins)
+    fitted = ActionTokenizer.fit(values)
+    np.testing.assert_array_equal(fitted.lo, tokenizer.lo)
+    np.testing.assert_array_equal(fitted.hi, tokenizer.hi)
 
 
 def test_invalid_bounds_rejected(action_bounds):

@@ -1,4 +1,4 @@
-"""Training utilities for manuscript listings 4.6 and 4.7."""
+"""Training utilities aligned with manuscript listings 4.7 and 4.8."""
 
 from __future__ import annotations
 
@@ -11,18 +11,11 @@ import torch
 
 from ch04.backbone_adapter import encode_prefix, gather_state_hidden
 from ch04.data import action_targets, prepare_batch
-from ch04.losses import categorical_entropy, masked_token_cross_entropy
-
-
-def freeze_backbone(backbone) -> None:
-    """Freeze every Chapter 3 parameter while training the action head."""
-    for parameter in backbone.parameters():
-        parameter.requires_grad = False
-    backbone.eval()
+from ch04.losses import masked_token_cross_entropy
 
 
 def head_parameters(head, backbone) -> list[torch.nn.Parameter]:
-    """Return trainable parameters owned outside the frozen backbone."""
+    """Return trainable parameters owned by the new action head."""
     backbone_ids = {id(parameter) for parameter in backbone.parameters()}
     return [
         parameter
@@ -31,41 +24,65 @@ def head_parameters(head, backbone) -> list[torch.nn.Parameter]:
     ]
 
 
-def head_only_state_dict(head) -> dict[str, torch.Tensor]:
-    """Return action-head state without its registered frozen backbone."""
-    return {
+def backbone_parameters(backbone) -> list[torch.nn.Parameter]:
+    """Return Chapter 3 parameters that remain trainable in Chapter 4."""
+    return [
+        parameter
+        for parameter in backbone.parameters()
+        if parameter.requires_grad
+    ]
+
+
+def policy_state_dict(head, backbone) -> dict[str, object]:
+    """Serialize the complete policy without duplicating the backbone."""
+    head_state = {
         name: value
         for name, value in head.state_dict().items()
         if not name.startswith("backbone.")
     }
+    return {
+        "head": head_state,
+        "backbone": backbone.state_dict(),
+    }
 
 
-def load_head_only_state_dict(head, state_dict) -> None:
-    """Load a compact head state while retaining the attached backbone."""
-    missing, unexpected = head.load_state_dict(state_dict, strict=False)
+def load_policy_state_dict(head, backbone, state_dict) -> None:
+    """Restore a policy produced by :func:`policy_state_dict`."""
+    missing, unexpected = head.load_state_dict(
+        state_dict["head"], strict=False
+    )
     invalid_missing = [
         name for name in missing if not name.startswith("backbone.")
     ]
     if invalid_missing or unexpected:
         raise ValueError(
-            "invalid compact head state: "
+            "invalid policy head state: "
             f"missing={invalid_missing}, unexpected={unexpected}"
         )
+    backbone.load_state_dict(state_dict["backbone"])
 
 
 def make_optimizer(
     head,
     backbone,
     learning_rate: float = 1e-4,
+    backbone_learning_rate: float = 1e-5,
     weight_decay: float = 0.05,
 ) -> torch.optim.AdamW:
-    """Build AdamW over head-only parameters."""
-    parameters = head_parameters(head, backbone)
-    if not parameters:
+    """Use separate learning rates for the new head and pretrained trunk."""
+    head_params = head_parameters(head, backbone)
+    backbone_params = backbone_parameters(backbone)
+    if not head_params:
         raise ValueError("the action head has no trainable parameters")
+    if not backbone_params:
+        raise ValueError(
+            "the Chapter 3 backbone has no trainable parameters"
+        )
     return torch.optim.AdamW(
-        parameters,
-        lr=learning_rate,
+        [
+            {"params": head_params, "lr": learning_rate},
+            {"params": backbone_params, "lr": backbone_learning_rate},
+        ],
         betas=(0.9, 0.95),
         weight_decay=weight_decay,
     )
@@ -80,7 +97,7 @@ def warmup_cosine_multiplier(
     if warmup_steps < 0 or total_steps <= warmup_steps:
         raise ValueError("require 0 <= warmup_steps < total_steps")
     if step < warmup_steps:
-        return step / max(warmup_steps, 1)
+        return (step + 1) / max(warmup_steps, 1)
     progress = min(
         (step - warmup_steps) / (total_steps - warmup_steps), 1.0
     )
@@ -106,10 +123,86 @@ def action_head_logits(head, backbone, model_inputs, target_bins):
         return head.teacher_forced_logits(*model_inputs, target_bins)
     if hasattr(head, "backbone"):
         return head(*model_inputs)
-    images, sequence_ids, state = model_inputs
-    hidden = encode_prefix(backbone, images, sequence_ids, state)
-    state_hidden = gather_state_hidden(backbone, hidden, sequence_ids)
-    return head(state_hidden)
+    hidden = encode_prefix(backbone, *model_inputs)
+    return head(gather_state_hidden(hidden))
+
+
+@torch.no_grad()
+def held_out_loss(
+    head,
+    backbone,
+    loader: Iterable[Mapping[str, object]],
+    stats,
+    tokenizer,
+    device: torch.device | str,
+    label_smoothing: float = 0.05,
+) -> float:
+    """Dataset-level token CE on an episode-disjoint validation loader."""
+    modules = {
+        id(module): module
+        for root in (head, backbone)
+        for module in root.modules()
+    }
+    modes = [(module, module.training) for module in modules.values()]
+    head.eval()
+    backbone.eval()
+    loss_sum = 0.0
+    valid_count = 0
+    try:
+        for batch in loader:
+            model_inputs = prepare_batch(
+                batch, stats, device, backbone
+            )
+            bins, pad = action_targets(batch, stats, tokenizer, device)
+            logits = action_head_logits(
+                head, backbone, model_inputs, bins
+            )
+            keep = ~pad
+            loss = masked_token_cross_entropy(
+                logits,
+                bins,
+                pad,
+                label_smoothing=label_smoothing,
+            )
+            count = int(keep.sum())
+            loss_sum += float(loss) * count
+            valid_count += count
+    finally:
+        for module, training in modes:
+            module.training = training
+    if valid_count == 0:
+        raise ValueError(
+            "validation loader produced no valid action tokens"
+        )
+    return loss_sum / valid_count
+
+
+def _checkpoint_payload(
+    *,
+    step: int,
+    head,
+    backbone,
+    optimizer,
+    scheduler,
+    validation_loss: float | None,
+    stats,
+    tokenizer,
+    config,
+) -> dict[str, object]:
+    return {
+        "step": step,
+        "model": policy_state_dict(head, backbone),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "validation_loss": validation_loss,
+        "normalization": stats,
+        "tokenizer": {
+            "lo": torch.from_numpy(tokenizer.lo.copy()),
+            "hi": torch.from_numpy(tokenizer.hi.copy()),
+            "n_bins": tokenizer.n_bins,
+        },
+        "config": config,
+    }
 
 
 def train_action_head(
@@ -122,11 +215,13 @@ def train_action_head(
     total_steps: int = 20_000,
     warmup_steps: int = 500,
     learning_rate: float = 1e-4,
+    backbone_learning_rate: float = 1e-5,
     label_smoothing: float = 0.05,
     grad_clip: float = 1.0,
     log_every: int = 100,
     checkpoint_every: int = 1_000,
     checkpoint_dir: str | Path | None = None,
+    validation_loader: Iterable[Mapping[str, object]] | None = None,
     resume_from: str | Path | None = None,
 ) -> list[dict[str, float]]:
     """Train a factorized, autoregressive, or parallel action head."""
@@ -136,48 +231,71 @@ def train_action_head(
         raise ValueError("log_every must be positive")
     if grad_clip <= 0:
         raise ValueError("grad_clip must be positive")
+    backbone.to(device)
     head.to(device)
     head.train()
-    freeze_backbone(backbone)
-    optimizer = make_optimizer(head, backbone, learning_rate)
+    backbone.train()
+    optimizer = make_optimizer(
+        head,
+        backbone,
+        learning_rate,
+        backbone_learning_rate,
+    )
     scheduler = make_scheduler(optimizer, warmup_steps, total_steps)
-    parameters = head_parameters(head, backbone)
+    parameters = [
+        parameter
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    ]
     checkpoint_path = None
     if checkpoint_dir is not None:
         checkpoint_path = Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
+    config = {
+        "total_steps": total_steps,
+        "warmup_steps": warmup_steps,
+        "learning_rate": learning_rate,
+        "backbone_learning_rate": backbone_learning_rate,
+        "label_smoothing": label_smoothing,
+        "grad_clip": grad_clip,
+    }
     history: list[dict[str, float]] = []
     step = 0
+    best_validation = float("inf")
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device)
-        expected_config = {
-            "total_steps": total_steps,
-            "warmup_steps": warmup_steps,
-            "learning_rate": learning_rate,
-            "label_smoothing": label_smoothing,
-            "grad_clip": grad_clip,
-        }
-        if checkpoint.get("config") != expected_config:
+        if checkpoint.get("config") != config:
             raise ValueError("resume configuration differs from checkpoint")
         saved_tokenizer = checkpoint["tokenizer"]
-        current_lo = torch.from_numpy(tokenizer.lo)
-        current_hi = torch.from_numpy(tokenizer.hi)
         if (
             saved_tokenizer["n_bins"] != tokenizer.n_bins
-            or not torch.equal(saved_tokenizer["lo"].cpu(), current_lo)
-            or not torch.equal(saved_tokenizer["hi"].cpu(), current_hi)
+            or not torch.equal(
+                torch.as_tensor(saved_tokenizer["lo"]),
+                torch.from_numpy(tokenizer.lo),
+            )
+            or not torch.equal(
+                torch.as_tensor(saved_tokenizer["hi"]),
+                torch.from_numpy(tokenizer.hi),
+            )
         ):
             raise ValueError("resume tokenizer differs from checkpoint")
-        load_head_only_state_dict(head, checkpoint["head"])
+        load_policy_state_dict(head, backbone, checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        step = int(checkpoint["step"]) + 1
+        step = int(checkpoint["step"])
+        saved_validation = checkpoint.get("validation_loss")
+        if saved_validation is not None:
+            best_validation = float(saved_validation)
+
     while step < total_steps:
         saw_batch = False
         for batch in loader:
             saw_batch = True
-            model_inputs = prepare_batch(batch, stats, backbone, device)
+            optimizer.zero_grad(set_to_none=True)
+            model_inputs = prepare_batch(
+                batch, stats, device, backbone
+            )
             bins, pad = action_targets(batch, stats, tokenizer, device)
             use_amp = torch.device(device).type == "cuda"
             amp = (
@@ -195,52 +313,70 @@ def train_action_head(
                 pad,
                 label_smoothing=label_smoothing,
             )
-            step_learning_rate = optimizer.param_groups[0]["lr"]
+            step_head_lr = optimizer.param_groups[0]["lr"]
+            step_backbone_lr = optimizer.param_groups[1]["lr"]
             loss.backward()
             torch.nn.utils.clip_grad_norm_(parameters, grad_clip)
             optimizer.step()
             scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
 
             if step % log_every == 0:
+                log_probs = logits.float().log_softmax(-1)
+                token_entropy = -(log_probs.exp() * log_probs).sum(-1)
                 record = {
                     "step": float(step),
                     "loss": float(loss.detach()),
-                    "entropy": float(categorical_entropy(logits).detach()),
-                    "lr": step_learning_rate,
+                    "entropy": float(token_entropy[~pad].mean().detach()),
+                    "head_lr": step_head_lr,
+                    "backbone_lr": step_backbone_lr,
                 }
                 history.append(record)
                 print(
                     f"[{step:6d}] loss={record['loss']:.3f} "
                     f"ent={record['entropy']:.2f}"
                 )
-            if (
+
+            completed_step = step + 1
+            should_checkpoint = (
                 checkpoint_path is not None
                 and checkpoint_every > 0
-                and step % checkpoint_every == checkpoint_every - 1
-            ):
-                torch.save(
-                    {
-                        "step": step,
-                        "head": head_only_state_dict(head),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict(),
-                        "tokenizer": {
-                            "lo": torch.from_numpy(tokenizer.lo.copy()),
-                            "hi": torch.from_numpy(tokenizer.hi.copy()),
-                            "n_bins": tokenizer.n_bins,
-                        },
-                        "config": {
-                            "total_steps": total_steps,
-                            "warmup_steps": warmup_steps,
-                            "learning_rate": learning_rate,
-                            "label_smoothing": label_smoothing,
-                            "grad_clip": grad_clip,
-                        },
-                    },
-                    checkpoint_path / f"step{step:06d}.pt",
+                and completed_step % checkpoint_every == 0
+            )
+            if should_checkpoint:
+                validation = (
+                    held_out_loss(
+                        head,
+                        backbone,
+                        validation_loader,
+                        stats,
+                        tokenizer,
+                        device,
+                        label_smoothing,
+                    )
+                    if validation_loader is not None
+                    else None
                 )
-            step += 1
+                payload = _checkpoint_payload(
+                    step=completed_step,
+                    head=head,
+                    backbone=backbone,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    validation_loss=validation,
+                    stats=stats,
+                    tokenizer=tokenizer,
+                    config=config,
+                )
+                torch.save(payload, checkpoint_path / "latest.pt")
+                if validation is not None and validation < best_validation:
+                    best_validation = validation
+                    torch.save(payload, checkpoint_path / "best.pt")
+                if completed_step in {5_000, total_steps}:
+                    torch.save(
+                        payload,
+                        checkpoint_path / f"step{completed_step:06d}.pt",
+                    )
+            step = completed_step
             if step >= total_steps:
                 break
         if not saw_batch:

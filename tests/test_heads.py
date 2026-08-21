@@ -20,7 +20,8 @@ def test_factorized_head_shape_and_float32():
 
 def test_parallel_head_mask_and_shape(fake_backbone, model_inputs):
     head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
-    mask = head._mask(7, torch.device("cpu"))
+    valid = torch.ones(1, 7, dtype=torch.bool)
+    mask = head._mask(valid, torch.float32)
     assert mask.shape == (1, 1, 103, 103)
     assert torch.isneginf(mask[0, 0, 0, 1])
     assert torch.all(mask[0, 0, 7:, 7:] == 0)
@@ -28,7 +29,7 @@ def test_parallel_head_mask_and_shape(fake_backbone, model_inputs):
     assert logits.shape == (2, 96, 256)
     assert logits.dtype == torch.float32
     logits.mean().backward()
-    assert head.slot.grad is not None
+    assert head.slots.grad is not None
 
 
 def test_parallel_mask_excludes_padded_prefix_keys(fake_backbone):
@@ -36,50 +37,55 @@ def test_parallel_mask_excludes_padded_prefix_keys(fake_backbone):
     valid = torch.tensor(
         [[True, True, True, False], [True, True, True, True]]
     )
-    mask = head._mask(4, torch.device("cpu"), prefix_valid=valid)
+    mask = head._mask(valid, torch.float32)
     action_query = 4
     assert torch.isneginf(mask[0, 0, action_query, 3])
     assert mask[1, 0, action_query, 3] == 0
 
 
-def test_parallel_positions_ignore_batch_padding(fake_backbone):
+def test_parallel_positions_ignore_text_padding(fake_backbone):
     head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
     images = torch.rand(2, 2, 3, 8, 8)
-    ids = torch.tensor(
-        [
-            [300, 300, 300, 300, 10, 301, 0, 0],
-            [300, 300, 300, 300, 10, 11, 12, 301],
-        ]
+    ids = torch.tensor([[10, 0, 0], [10, 11, 12]])
+    text_valid = torch.tensor(
+        [[True, False, False], [True, True, True]]
     )
-    head(images, ids, torch.rand(2, 6))
+    head(images, ids, torch.rand(2, 6), text_valid)
     positions = fake_backbone.language_backbone.last_position_ids
-    assert positions[0, :8].tolist() == [0, 1, 2, 3, 4, 5, 5, 5]
+    assert positions[0, :8].tolist() == [0, 1, 2, 3, 4, 0, 0, 5]
     assert positions[1, :8].tolist() == list(range(8))
     assert positions[0, 8] == 6
     assert positions[1, 8] == 8
 
 
 def test_ar_teacher_forcing_shift(fake_backbone, model_inputs):
-    head = AutoregressiveActionHead(fake_backbone, d_embed=12)
+    head = AutoregressiveActionHead(
+        fake_backbone,
+        d_embed=12,
+        horizon=2,
+        action_dim=5,
+    )
     targets = torch.arange(10).repeat(2, 1)
     captured = []
-    handle = fake_backbone.embed_tokens.register_forward_pre_hook(
+    handle = head.action_embeddings.register_forward_pre_hook(
         lambda _module, args: captured.append(args[0].detach().clone())
     )
     try:
         logits = head.teacher_forced_logits(*model_inputs, targets)
     finally:
         handle.remove()
-    seen = captured[-1]
-    prefix = model_inputs[1].shape[1]
     assert logits.shape == (2, 10, 256)
-    assert seen.shape[1] == prefix + 9
-    assert torch.equal(seen[:, prefix:], 48896 + targets[:, :-1])
+    assert torch.equal(captured[-1], targets[:, :-1])
 
 
 def test_ar_masked_loss_ignores_padded_targets(fake_backbone, model_inputs):
     torch.manual_seed(2)
-    head = AutoregressiveActionHead(fake_backbone, d_embed=12)
+    head = AutoregressiveActionHead(
+        fake_backbone,
+        d_embed=12,
+        horizon=2,
+        action_dim=4,
+    )
     targets = torch.randint(0, 256, (2, 8))
     pad = torch.zeros_like(targets, dtype=torch.bool)
     pad[:, -2:] = True
@@ -96,23 +102,34 @@ def test_ar_loss_default_matches_manuscript():
     assert default == 0.05
 
 
-def test_ar_decode_conditions_on_previous_bins(fake_backbone, model_inputs):
-    head = AutoregressiveActionHead(fake_backbone, d_embed=12)
+def test_ar_generate_uses_cache_and_encodes_vision_once(
+    fake_backbone, model_inputs
+):
+    head = AutoregressiveActionHead(
+        fake_backbone,
+        d_embed=12,
+        horizon=1,
+        action_dim=4,
+    )
     captured = []
-    handle = fake_backbone.embed_tokens.register_forward_pre_hook(
+    handle = head.action_embeddings.register_forward_pre_hook(
         lambda _module, args: captured.append(args[0].detach().clone())
     )
     try:
-        bins = head.decode(*model_inputs, grid_size=4, greedy=True)
+        bins = head.generate(*model_inputs)
     finally:
         handle.remove()
-    assert bins.shape == (2, 4)
+    assert bins.shape == (2, 1, 4)
     assert fake_backbone.vision_encoder.calls == 1
-    lengths = [ids.shape[1] for ids in captured]
-    start = model_inputs[1].shape[1]
-    assert lengths == [start, 1, 2, 3]
+    assert [ids.shape for ids in captured] == [(2, 1)] * 3
 
 
-def test_ar_custom_bin_count_uses_matching_native_tail(fake_backbone):
-    head = AutoregressiveActionHead(fake_backbone, d_embed=12, n_bins=128)
-    assert head.token_base == 49_024
+def test_ar_uses_separate_action_embedding_table(fake_backbone):
+    head = AutoregressiveActionHead(
+        fake_backbone, d_embed=12, n_bins=128
+    )
+    assert head.action_embeddings.num_embeddings == 128
+    assert (
+        head.action_embeddings
+        is not fake_backbone.language_backbone.get_input_embeddings()
+    )

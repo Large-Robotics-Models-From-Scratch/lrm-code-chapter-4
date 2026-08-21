@@ -6,7 +6,7 @@ import torch
 
 from ch04 import ActionTokenizer
 from ch04.data import (
-    _padded_sequence_ids,
+    _compute_stats_from_frame_columns,
     action_targets,
     denormalize_from_stats,
     normalize_from_stats,
@@ -15,6 +15,7 @@ from ch04.data import (
 from ch04.decoding import (
     mean_absolute_error_by_timestep,
     nucleus_probabilities,
+    select_bins,
 )
 from ch04.losses import expand_timestep_pad_mask, masked_token_cross_entropy
 
@@ -26,6 +27,22 @@ def test_normalization_round_trip(fake_stats):
     torch.testing.assert_close(restored, values)
 
 
+def test_training_stats_use_non_video_frame_columns():
+    class Frames:
+        hf_dataset = {
+            "observation.state": [torch.zeros(6), torch.full((6,), 2.0)],
+            "action": [torch.ones(6), torch.full((6,), 3.0)],
+        }
+
+    stats = _compute_stats_from_frame_columns(Frames())
+    torch.testing.assert_close(
+        stats["observation.state"]["mean"], torch.ones(6)
+    )
+    torch.testing.assert_close(
+        stats["action"]["mean"], torch.full((6,), 2.0)
+    )
+
+
 def test_prepare_batch_shapes(fake_backbone, fake_stats):
     batch = {
         "observation.images.up": torch.rand(2, 3, 20, 30),
@@ -33,32 +50,35 @@ def test_prepare_batch_shapes(fake_backbone, fake_stats):
         "observation.state": torch.rand(2, 6),
         "task": ["pick", "place"],
     }
-    images, ids, state = prepare_batch(
-        batch, fake_stats, fake_backbone, "cpu"
+    images, ids, state, text_valid = prepare_batch(
+        batch, fake_stats, "cpu", fake_backbone
     )
-    assert images.shape == (2, 2, 3, 224, 224)
+    assert images.shape == (2, 2, 3, 20, 30)
     assert ids.ndim == 2 and ids.dtype == torch.int64
     assert state.shape == (2, 6) and state.dtype == torch.float32
+    assert text_valid.shape == ids.shape and text_valid.dtype == torch.bool
 
 
-def test_sequence_padding_follows_state_and_is_masked(fake_backbone):
-    from ch04.backbone_adapter import prefix_valid_mask
-
-    ids = _padded_sequence_ids(
-        fake_backbone, [[10], [11, 12, 13]], max_text_tokens=3
-    )
-    assert ids[0].tolist() == [300, 300, 300, 300, 10, 301, 0, 0]
-    assert ids[1].tolist() == [300, 300, 300, 300, 11, 12, 13, 301]
-    valid = prefix_valid_mask(fake_backbone, ids)
-    assert valid[0].tolist() == [True] * 6 + [False, False]
-    assert valid[1].tolist() == [True] * 8
-
-
-def test_prepare_batch_reuses_chapter3_antialiased_resize(
+def test_prepare_batch_tokenizes_and_masks_mixed_instructions(
     fake_backbone, fake_stats
 ):
-    from ch03 import preprocess_image
+    batch = {
+        "observation.images.up": torch.rand(2, 3, 20, 30),
+        "observation.images.side": torch.rand(2, 3, 20, 30),
+        "observation.state": torch.rand(2, 6),
+        "task": ["pick", "pick the object"],
+    }
+    _, ids, _, valid = prepare_batch(
+        batch, fake_stats, "cpu", fake_backbone
+    )
+    assert ids.shape == valid.shape == (2, 3)
+    assert valid[0].tolist() == [True, False, False]
+    assert valid[1].tolist() == [True, True, True]
 
+
+def test_prepare_batch_leaves_resize_to_chapter3(
+    fake_backbone, fake_stats
+):
     up = torch.rand(1, 3, 480, 640)
     side = torch.rand(1, 3, 480, 640)
     batch = {
@@ -67,9 +87,11 @@ def test_prepare_batch_reuses_chapter3_antialiased_resize(
         "observation.state": torch.rand(1, 6),
         "task": ["pick"],
     }
-    images, _, _ = prepare_batch(batch, fake_stats, fake_backbone, "cpu")
-    torch.testing.assert_close(images[:, 0], preprocess_image(up))
-    torch.testing.assert_close(images[:, 1], preprocess_image(side))
+    images, _, _, _ = prepare_batch(
+        batch, fake_stats, "cpu", fake_backbone
+    )
+    torch.testing.assert_close(images[:, 0], up)
+    torch.testing.assert_close(images[:, 1], side)
 
 
 def test_action_target_grid_order(fake_stats):
@@ -107,6 +129,13 @@ def test_top_p_keeps_threshold_crossing_token():
     assert filtered[0, 1] > 0
     assert filtered[0, 2] == 0
     assert filtered.sum().item() == pytest.approx(1.0)
+
+
+def test_select_bins_defaults_to_argmax():
+    logits = torch.tensor([[[0.0, 2.0, 1.0]]])
+    assert select_bins(logits).item() == 1
+    with pytest.raises(ValueError, match="unknown strategy"):
+        select_bins(logits, strategy="median")
 
 
 def test_timestep_mae_excludes_padding():

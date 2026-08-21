@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import torch
 
 from ch04.constants import ACTION_DIM, ACTION_HORIZON
-from ch04.data import denormalize_from_stats
+from ch04.data import denormalize_from_stats, prepare_batch
 
 
 @contextmanager
@@ -58,22 +58,43 @@ def sample_logits(
     return picks.reshape(probs.shape[:-1])
 
 
+def select_bins(
+    logits: torch.Tensor,
+    strategy: str = "argmax",
+    temperature: float = 1.0,
+) -> torch.Tensor:
+    """Select one bin per cell using manuscript listing 4.10."""
+    if strategy == "argmax":
+        return logits.argmax(dim=-1)
+    if strategy == "sample":
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+        probabilities = (logits.float() / temperature).softmax(-1)
+        flat = probabilities.reshape(-1, probabilities.shape[-1])
+        return torch.multinomial(flat, 1).view(logits.shape[:-1])
+    raise ValueError(f"unknown strategy: {strategy}")
+
+
 @torch.no_grad()
 def decode_parallel_chunk(
     head,
-    model_inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    model_inputs: tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
     tokenizer,
     stats: Mapping[str, Mapping[str, torch.Tensor]] | None = None,
     horizon: int = ACTION_HORIZON,
     action_dim: int = ACTION_DIM,
+    strategy: str = "argmax",
     temperature: float = 1.0,
-    top_p: float = 0.95,
-    greedy: bool = False,
 ) -> torch.Tensor:
     """Decode a parallel head to normalized or raw continuous actions."""
     with evaluation_mode(head):
         logits = head(*model_inputs)
-    bins = sample_logits(logits, temperature, top_p, greedy)
+    bins = select_bins(logits, strategy, temperature)
     expected = horizon * action_dim
     if bins.shape[1] != expected:
         raise ValueError(
@@ -84,6 +105,57 @@ def decode_parallel_chunk(
     if stats is None:
         return normalized
     return denormalize_from_stats(normalized, stats, "action")
+
+
+@torch.no_grad()
+def evaluate_open_loop(
+    head,
+    loader,
+    tokenizer,
+    stats: Mapping[str, Mapping[str, torch.Tensor]],
+    backbone,
+    device: torch.device | str,
+) -> dict[str, torch.Tensor]:
+    """Aggregate padding-aware MAE by horizon offset and control."""
+    error_sum = None
+    valid_count = None
+    with evaluation_mode(head):
+        for batch in loader:
+            model_inputs = prepare_batch(
+                batch, stats, device, backbone
+            )
+            predicted = decode_parallel_chunk(
+                head,
+                model_inputs,
+                tokenizer,
+                stats,
+                strategy="argmax",
+            ).cpu()
+            expert = torch.as_tensor(batch["action"]).float().cpu()
+            timestep_valid = ~torch.as_tensor(
+                batch.get(
+                    "action_is_pad",
+                    torch.zeros(expert.shape[:2], dtype=torch.bool),
+                ),
+                dtype=torch.bool,
+            ).cpu()
+            valid = timestep_valid.unsqueeze(-1).expand_as(expert)
+            if error_sum is None:
+                error_sum = torch.zeros_like(expert[0])
+                valid_count = torch.zeros_like(expert[0])
+            error_sum += ((predicted - expert).abs() * valid).sum(0)
+            valid_count += valid.sum(0)
+    if error_sum is None or valid_count is None:
+        raise ValueError("validation loader produced no batches")
+    mae = torch.full_like(error_sum, float("nan"))
+    seen = valid_count > 0
+    mae[seen] = error_sum[seen] / valid_count[seen]
+    scale = torch.as_tensor(stats["action"]["std"]).float().clamp_min(1e-8)
+    return {
+        "mae": mae,
+        "mae_in_standard_deviations": mae / scale[None],
+        "valid_count": valid_count,
+    }
 
 
 def mean_absolute_error_by_timestep(
