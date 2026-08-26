@@ -86,6 +86,13 @@ cell retries shallow clones three times and prints Git's stderr.
 - Chapter 3 receives raw `[0,1]` images `[B,2,3,H,W]`, padded native text
   ids, a text attention mask, and normalized state `[B,6]`. It owns image
   resizing, direct multimodal concatenation, and compact position ids.
+- The six-value proprioceptive vector becomes one observation token. This is
+  intentionally asymmetric with the discrete head's one output token per
+  control dimension: input token count is a representation choice, while
+  per-control output bins avoid a combinatorial joint-action vocabulary.
+  SmolVLA likewise projects the complete current state into one prefix token;
+  RT-1 is an example of a categorical policy that discretizes each action
+  dimension separately.
 - The parallel head extends Chapter 3's observation prefix with one learned
   576-wide slot per action-grid cell and contextualizes the complete block
   with a custom bidirectional action mask.
