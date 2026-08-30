@@ -1,0 +1,7 @@
+"""Shared dimensions from the Chapter 4 manuscript."""
+
+ACTION_DIM = 6
+ACTION_HORIZON = 16
+ACTION_BINS = 256
+ACTION_GRID = ACTION_HORIZON * ACTION_DIM
+SMOLLM_WIDTH = 576
