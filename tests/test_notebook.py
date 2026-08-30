@@ -39,6 +39,19 @@ def test_colab_setup_removes_only_broken_optional_torchaudio():
     assert "'--yes',\n             'torchaudio'" in setup
 
 
+def test_colab_force_refreshes_and_verifies_branch_api():
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    setup = "".join(notebook["cells"][1]["source"])
+
+    assert "--force-reinstall" in setup
+    assert "--no-deps" in setup
+    assert "chapter4_requirement" in setup
+    assert "from ch04.decoding import decode_action_chunk" in setup
+    assert "sample_action_grids" in setup
+    assert "sys.modules.pop(name, None)" in setup
+
+
 def test_colab_runs_shared_experiment_for_all_heads_in_order():
     path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
     notebook = json.loads(path.read_text())
