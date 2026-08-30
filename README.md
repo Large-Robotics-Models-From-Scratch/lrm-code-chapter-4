@@ -38,7 +38,7 @@ notebooks/ch04.ipynb             # complete Colab walkthrough
 
 ## Local setup
 
-Use Python 3.12 and install the sibling chapter packages first:
+Use Python 3.12 or 3.13 and install the sibling chapter packages first:
 
 ```bash
 python3.12 -m venv .venv
@@ -61,16 +61,8 @@ head, constructs episode-disjoint LeRobot action chunks, trains the shipped
 parallel policy for a configurable step count, and evaluates decoded held-out
 chunks in the dataset's raw action units.
 
-If a chapter repository is private, create a fine-grained GitHub personal
-access token with read access to that repository, add it under **Colab >
-Secrets** as `GITHUB_TOKEN`, and enable notebook access for the secret. The
-setup cell sends it through Git's process environment, never places it in
-the clone URL, and does not print it. For organization-owned repositories,
-authorize the token for SSO if the organization requires it.
-
-If a clone is interrupted and leaves an incomplete checkout, use **Runtime
-> Disconnect and delete runtime**, reconnect, and rerun the setup cell. The
-cell retries shallow clones three times and prints Git's stderr.
+The Colab setup installs the public Chapter 2, 3, and 4 packages directly
+from GitHub. It prints pip's full diagnostic if installation fails.
 
 ## Data and model contracts
 

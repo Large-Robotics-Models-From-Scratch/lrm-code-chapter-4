@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "lrm-ch04"
 version = "0.1.0"
 description = "Discrete behavior cloning for Chapter 4 of Build a Large Robot Model (From Scratch)"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12,<3.14"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Vatsal Chanana" },
