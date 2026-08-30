@@ -355,7 +355,10 @@ def plot_neighbor_softmaxes(
         color="tab:gray",
     )
     axes[0].set_ylabel("expert frames")
-    axes[0].set_title(caption or "held-out neighbourhood")
+    # Provenance can be long; wrap it rather than stretching the figure.
+    axes[0].set_title(
+        caption or "held-out neighbourhood", fontsize=8, wrap=True
+    )
 
     axis = np.arange(probs.shape[1])
     for row in probs[: min(n_curves, probs.shape[0])]:

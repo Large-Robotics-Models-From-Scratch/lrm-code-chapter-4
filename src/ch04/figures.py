@@ -99,10 +99,11 @@ def generate_all(
     n_neighbors: int = 32,
     dims: tuple[int, int] = (4, 5),
     timestep: int = 0,
-    n_samples: int = 512,
+    n_samples: int = 128,
     max_batches: int = 8,
     seed: int = 0,
     compare_heads: bool = False,
+    verbose: bool = True,
 ) -> dict[str, str]:
     """Write every code-backed figure and return the written paths."""
     import matplotlib
@@ -130,8 +131,13 @@ def generate_all(
     )
     from ch04.execution import execution_schedules
 
+    def announce(message: str) -> None:
+        if verbose:
+            print(message, flush=True)
+
     set_seed(seed)
     output = Path(output_dir)
+    announce("figure 4.4: the section 4.2 regression trap")
     written = {"figure_4_4": str(regression_trap_figure(output))}
 
     head, backbone, tokenizer, stats = load_policy(
@@ -147,6 +153,7 @@ def generate_all(
         seed=split_seed,
     )
 
+    announce("figure 4.8: held-out softmax neighbourhood")
     collected = collect_cell_softmaxes(
         head,
         backbone,
@@ -183,6 +190,14 @@ def generate_all(
                     other, backbone, horizon=head.horizon
                 ).to(device).eval()
 
+    if compare_heads:
+        announce(
+            "figure 4.9: sampling every head. The autoregressive head "
+            f"decodes {head.horizon * head.action_dim} positions in "
+            "series, so this dominates the runtime on CPU."
+        )
+    else:
+        announce("figure 4.9: joint mismatch")
     with evaluation_mode(head), evaluation_mode(backbone):
         pairs = joint_mismatch_samples(
             heads,
@@ -218,6 +233,7 @@ def generate_all(
         )
     )
 
+    announce("figure 4.10: execution schedules")
     chunks = decoded_chunk_stream(
         head,
         backbone,
@@ -234,6 +250,7 @@ def generate_all(
         )
     )
 
+    announce("figure 4.11: open-loop episode")
     trace = open_loop_episode_trace(
         head,
         backbone,
@@ -276,14 +293,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-neighbors", type=int, default=32)
     parser.add_argument("--timestep", type=int, default=0)
     parser.add_argument("--dims", type=int, nargs=2, default=[4, 5])
-    parser.add_argument("--n-samples", type=int, default=512)
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=128,
+        help="draws per head for figure 4.9; the AR head is the slow one",
+    )
     parser.add_argument("--max-batches", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None)
     parser.add_argument(
         "--compare-heads",
         action="store_true",
-        help="add untrained peers to the figure 4.9 panel comparison",
+        help=(
+            "add the other two heads to the figure 4.9 comparison; the "
+            "autoregressive head decodes H x D positions in series, so "
+            "prefer a GPU when this is set"
+        ),
     )
     return parser
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -111,8 +112,14 @@ def neighborhood_softmax_figure(
     neighbors = nearest_state_neighbors(
         collected["states"], anchor_index, n_neighbors
     )
+    # Keep the caption identifying but short: a full path stretches the
+    # figure until the panels are unreadable.
+    path = Path(checkpoint)
+    label = (
+        "/".join(path.parts[-2:]) if len(path.parts) > 1 else str(path)
+    )
     caption = (
-        f"checkpoint={checkpoint} anchor={anchor_index} "
+        f"checkpoint={label} anchor={anchor_index} "
         f"neighbors={n_neighbors} seed={seed}"
     )
     return plot_neighbor_softmaxes(
