@@ -37,3 +37,22 @@ def test_colab_setup_removes_only_broken_optional_torchaudio():
     assert install_index < probe_index < uninstall_index
     assert "if audio_probe.returncode:" in setup
     assert "'--yes',\n             'torchaudio'" in setup
+
+
+def test_colab_runs_shared_experiment_for_all_heads_in_order():
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    source = "\n".join(
+        "".join(cell["source"]) for cell in notebook["cells"]
+    )
+
+    assert "def run_head_experiment(" in source
+    assert "action_head_logits(" in source
+    assert "sample_action_grids(" in source
+    calls = [
+        source.index("run_head_experiment(\n    'factorized'"),
+        source.index("run_head_experiment(\n    'autoregressive'"),
+        source.index("run_head_experiment(\n    'parallel'"),
+    ]
+    assert calls == sorted(calls)
+    assert "backbone, head = build_action_head(name)" in source

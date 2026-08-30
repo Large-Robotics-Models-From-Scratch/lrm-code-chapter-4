@@ -13,8 +13,10 @@ from ch04.data import (
     prepare_batch,
 )
 from ch04.decoding import (
+    decode_action_chunk,
     mean_absolute_error_by_timestep,
     nucleus_probabilities,
+    sample_action_grids,
     select_bins,
 )
 from ch04.losses import expand_timestep_pad_mask, masked_token_cross_entropy
@@ -142,6 +144,45 @@ def test_select_bins_defaults_to_argmax():
     assert select_bins(logits).item() == 1
     with pytest.raises(ValueError, match="unknown strategy"):
         select_bins(logits, strategy="median")
+
+
+def test_generic_decode_supports_factorized_head(
+    fake_backbone, fake_stats, model_inputs
+):
+    from ch04 import ActionTokenizer, FactorizedActionHead
+
+    tokenizer = ActionTokenizer(-np.ones(6), np.ones(6))
+    head = FactorizedActionHead(d_embed=12)
+    decoded = decode_action_chunk(
+        head,
+        fake_backbone,
+        model_inputs,
+        tokenizer,
+        fake_stats,
+    )
+    assert decoded.shape == (2, 16, 6)
+
+
+def test_sample_action_grids_uses_autoregressive_generation(
+    fake_backbone, model_inputs
+):
+    from ch04 import AutoregressiveActionHead
+
+    head = AutoregressiveActionHead(
+        fake_backbone,
+        d_embed=12,
+        horizon=1,
+        action_dim=2,
+    )
+    before = fake_backbone.vision_encoder.calls
+    draws = sample_action_grids(
+        head,
+        fake_backbone,
+        model_inputs,
+        n_samples=3,
+    )
+    assert draws.shape == (3, 1, 2)
+    assert fake_backbone.vision_encoder.calls == before + 1
 
 
 def test_timestep_mae_excludes_padding():

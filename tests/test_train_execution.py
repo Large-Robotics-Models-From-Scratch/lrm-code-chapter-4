@@ -8,6 +8,7 @@ from ch04 import ActionTokenizer
 from ch04.decoding import evaluation_mode
 from ch04.execution import TemporalEnsembler, execute_chunk
 from ch04.train import (
+    action_head_logits,
     backbone_parameters,
     head_parameters,
     make_optimizer,
@@ -151,6 +152,53 @@ def test_training_continues_after_loader_epoch_boundary(
     assert [record["step"] for record in history] == [0.0, 1.0]
     assert history[0]["head_lr"] == pytest.approx(1e-4)
     assert history[0]["backbone_lr"] == pytest.approx(1e-5)
+
+
+@pytest.mark.parametrize(
+    "head_name",
+    ["factorized", "autoregressive", "parallel"],
+)
+def test_shared_training_loop_supports_every_head(
+    head_name, fake_backbone, fake_stats
+):
+    from ch04 import (
+        AutoregressiveActionHead,
+        FactorizedActionHead,
+        ParallelDecodeActionHead,
+    )
+
+    builders = {
+        "factorized": lambda: FactorizedActionHead(d_embed=12),
+        "autoregressive": lambda: AutoregressiveActionHead(
+            fake_backbone, d_embed=12
+        ),
+        "parallel": lambda: ParallelDecodeActionHead(
+            fake_backbone, d_embed=12
+        ),
+    }
+    history = train_action_head(
+        builders[head_name](),
+        fake_backbone,
+        [_batch()],
+        fake_stats,
+        _tokenizer(),
+        "cpu",
+        total_steps=1,
+        warmup_steps=0,
+        log_every=1,
+    )
+    assert len(history) == 1
+    assert math.isfinite(history[0]["loss"])
+
+
+def test_autoregressive_logits_require_teacher_forcing_targets(
+    fake_backbone, model_inputs
+):
+    from ch04 import AutoregressiveActionHead
+
+    head = AutoregressiveActionHead(fake_backbone, d_embed=12)
+    with pytest.raises(ValueError, match="target_bins"):
+        action_head_logits(head, fake_backbone, model_inputs)
 
 
 def test_temporal_ensemble_matches_weighted_average():

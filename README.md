@@ -56,10 +56,12 @@ ruff check src tests
 ```
 
 The [Chapter 4 Colab](notebooks/ch04.ipynb) installs all three chapter
-repositories, demonstrates MSE collapse, fits the tokenizer, runs every
-head, constructs episode-disjoint LeRobot action chunks, trains the shipped
-parallel policy for a configurable step count, and evaluates decoded held-out
-chunks in the dataset's raw action units.
+repositories, demonstrates MSE collapse, fits the tokenizer, and constructs
+episode-disjoint LeRobot action chunks. A shared experiment runner then
+trains, visualizes, samples, and evaluates the factorized, autoregressive,
+and parallel heads in order. Each design starts from a fresh Chapter 3
+backbone, and decoded held-out chunks are compared in the dataset's raw
+action units.
 
 The Colab setup installs the public Chapter 2, 3, and 4 packages directly
 from GitHub. It prints pip's full diagnostic if installation fails. LeRobot

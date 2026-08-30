@@ -117,9 +117,24 @@ def make_scheduler(
     )
 
 
-def action_head_logits(head, backbone, model_inputs, target_bins):
-    """Run any of the manuscript's three action-head variants."""
+def action_head_logits(
+    head,
+    backbone,
+    model_inputs,
+    target_bins: torch.Tensor | None = None,
+):
+    """Return training logits from any of the three action heads.
+
+    The factorized and parallel heads need only the observation. The
+    autoregressive head additionally consumes the expert grid for causal
+    teacher forcing. Keeping that variation here lets training, validation,
+    and visualization share the rest of their pipeline.
+    """
     if hasattr(head, "teacher_forced_logits"):
+        if target_bins is None:
+            raise ValueError(
+                "target_bins are required for autoregressive logits"
+            )
         return head.teacher_forced_logits(*model_inputs, target_bins)
     if hasattr(head, "backbone"):
         return head(*model_inputs)
