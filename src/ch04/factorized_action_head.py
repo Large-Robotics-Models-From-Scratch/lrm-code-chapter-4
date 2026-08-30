@@ -24,6 +24,8 @@ class FactorizedActionHead(nn.Module):
         d_slot: int = 256,
     ) -> None:
         super().__init__()
+        self.horizon = horizon
+        self.action_dim = action_dim
         self.grid = horizon * action_dim
         self.n_bins = n_bins
         self.slots = nn.Parameter(0.02 * torch.randn(self.grid, d_slot))
@@ -37,4 +39,10 @@ class FactorizedActionHead(nn.Module):
             raise ValueError("state_hidden must have shape [B, d_embed]")
         state_hidden = state_hidden.to(self.projection.weight.dtype)
         hidden = self.projection(state_hidden)[:, None, :]
-        return self.action_decoder(F.gelu(hidden + self.slots)).float()
+        logits = self.action_decoder(F.gelu(hidden + self.slots))
+        return logits.view(
+            state_hidden.shape[0],
+            self.horizon,
+            self.action_dim,
+            self.n_bins,
+        ).float()

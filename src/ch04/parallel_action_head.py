@@ -13,7 +13,7 @@ from ch04.constants import (
 
 
 class ParallelDecodeActionHead(nn.Module):
-    """Decode the full action grid in one bidirectional action block."""
+    """Decode one vector-valued action position per future timestep."""
 
     def __init__(
         self,
@@ -34,12 +34,11 @@ class ParallelDecodeActionHead(nn.Module):
             set_attention("eager")
         self.horizon = horizon
         self.action_dim = action_dim
-        self.grid = horizon * action_dim
         self.n_bins = n_bins
         self.slots = nn.Parameter(
-            0.02 * torch.randn(self.grid, d_embed)
+            0.02 * torch.randn(horizon, d_embed)
         )
-        self.readout = nn.Linear(d_embed, n_bins)
+        self.readout = nn.Linear(d_embed, action_dim * n_bins)
         nn.init.normal_(self.readout.weight, std=0.02)
         nn.init.zeros_(self.readout.bias)
 
@@ -53,7 +52,7 @@ class ParallelDecodeActionHead(nn.Module):
             raise ValueError("prefix_valid must have shape [B, N]")
         prefix_valid = prefix_valid.bool()
         batch_size, n_prefix = prefix_valid.shape
-        n_total = n_prefix + self.grid
+        n_total = n_prefix + self.horizon
         mask = torch.zeros(
             batch_size,
             1,
@@ -78,7 +77,7 @@ class ParallelDecodeActionHead(nn.Module):
                 prefix_valid,
                 torch.ones(
                     batch_size,
-                    self.grid,
+                    self.horizon,
                     device=prefix_valid.device,
                     dtype=torch.bool,
                 ),
@@ -109,9 +108,15 @@ class ParallelDecodeActionHead(nn.Module):
         hidden = self.backbone.contextualize(
             sequence,
             self._mask(prefix_valid, sequence.dtype),
-            extend_position_ids(prefix_positions, self.grid),
+            extend_position_ids(prefix_positions, self.horizon),
         )
-        action_hidden = hidden[:, -self.grid :].to(
+        action_hidden = hidden[:, -self.horizon :].to(
             self.readout.weight.dtype
         )
-        return self.readout(action_hidden).float()
+        logits = self.readout(action_hidden)
+        return logits.view(
+            batch_size,
+            self.horizon,
+            self.action_dim,
+            self.n_bins,
+        ).float()

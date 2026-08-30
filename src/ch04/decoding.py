@@ -95,12 +95,11 @@ def decode_parallel_chunk(
     with evaluation_mode(head):
         logits = head(*model_inputs)
     bins = select_bins(logits, strategy, temperature)
-    expected = horizon * action_dim
-    if bins.shape[1] != expected:
+    if bins.ndim != 3 or bins.shape[1:] != (horizon, action_dim):
         raise ValueError(
-            f"head returned {bins.shape[1]} cells, expected {expected}"
+            "head must return logits shaped [B, H, D, bins]"
         )
-    grid = bins.reshape(-1, horizon, action_dim).cpu().numpy()
+    grid = bins.cpu().numpy()
     normalized = torch.from_numpy(tokenizer.decode(grid))
     if stats is None:
         return normalized

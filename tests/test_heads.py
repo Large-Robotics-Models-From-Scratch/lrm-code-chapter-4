@@ -13,7 +13,7 @@ from ch04 import (
 def test_factorized_head_shape_and_float32():
     head = FactorizedActionHead(d_embed=12)
     logits = head(torch.rand(3, 12))
-    assert logits.shape == (3, 96, 256)
+    assert logits.shape == (3, 16, 6, 256)
     assert logits.dtype == torch.float32
     assert torch.count_nonzero(head.action_decoder.bias) == 0
 
@@ -22,11 +22,11 @@ def test_parallel_head_mask_and_shape(fake_backbone, model_inputs):
     head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
     valid = torch.ones(1, 7, dtype=torch.bool)
     mask = head._mask(valid, torch.float32)
-    assert mask.shape == (1, 1, 103, 103)
+    assert mask.shape == (1, 1, 23, 23)
     assert torch.isneginf(mask[0, 0, 0, 1])
     assert torch.all(mask[0, 0, 7:, 7:] == 0)
     logits = head(*model_inputs)
-    assert logits.shape == (2, 96, 256)
+    assert logits.shape == (2, 16, 6, 256)
     assert logits.dtype == torch.float32
     logits.mean().backward()
     assert head.slots.grad is not None
@@ -74,7 +74,7 @@ def test_ar_teacher_forcing_shift(fake_backbone, model_inputs):
         logits = head.teacher_forced_logits(*model_inputs, targets)
     finally:
         handle.remove()
-    assert logits.shape == (2, 10, 256)
+    assert logits.shape == (2, 2, 5, 256)
     assert torch.equal(captured[-1], targets[:, :-1])
 
 

@@ -101,15 +101,19 @@ def test_action_target_grid_order(fake_stats):
     pad = torch.tensor([[False, True, False], [False, False, False]])
     batch = {"action": actions, "action_is_pad": pad}
     bins, token_pad = action_targets(batch, fake_stats, tokenizer, "cpu")
-    assert bins.shape == (2, 18)
-    assert token_pad.shape == (2, 18)
-    assert token_pad[0].tolist() == [False] * 6 + [True] * 6 + [False] * 6
+    assert bins.shape == (2, 3, 6)
+    assert token_pad.shape == (2, 3, 6)
+    assert token_pad[0].tolist() == [
+        [False] * 6,
+        [True] * 6,
+        [False] * 6,
+    ]
 
 
 def test_masked_cross_entropy_and_all_pad_error():
-    logits = torch.zeros(1, 3, 256)
-    targets = torch.tensor([[0, 1, 2]])
-    pad = torch.tensor([[False, True, True]])
+    logits = torch.zeros(1, 1, 3, 256)
+    targets = torch.tensor([[[0, 1, 2]]])
+    pad = torch.tensor([[[False, True, True]]])
     loss = masked_token_cross_entropy(logits, targets, pad, 0.05)
     assert float(loss) == pytest.approx(math.log(256), rel=1e-5)
     with pytest.raises(ValueError):
@@ -119,7 +123,9 @@ def test_masked_cross_entropy_and_all_pad_error():
 def test_pad_mask_expansion():
     pad = torch.tensor([[False, True]])
     expanded = expand_timestep_pad_mask(pad, 3)
-    assert expanded.tolist() == [[False, False, False, True, True, True]]
+    assert expanded.tolist() == [
+        [[False, False, False], [True, True, True]]
+    ]
 
 
 def test_top_p_keeps_threshold_crossing_token():
@@ -147,10 +153,51 @@ def test_timestep_mae_excludes_padding():
 
 
 def test_diagnostics_cover_pairs_and_temporal_jitter():
-    from ch04.diagnostics import sample_cell_pairs, temporal_jitter
+    from ch04.diagnostics import (
+        sample_cell_pairs,
+        temporal_jitter,
+        within_expert_support,
+    )
 
-    logits = torch.zeros(1, 96, 256)
+    logits = torch.zeros(1, 16, 6, 256, requires_grad=True)
     first, second = sample_cell_pairs(logits, 4, 5, n_samples=20)
     assert first.shape == second.shape == (20,)
     grid = np.arange(16 * 6).reshape(16, 6)
     assert temporal_jitter(grid) == pytest.approx(6.0)
+    support = within_expert_support(
+        np.array([[1, 1], [20, 20]]),
+        np.array([[0, 0]]),
+        support_radius=2.0,
+    )
+    np.testing.assert_array_equal(support, [True, False])
+
+
+def test_plot_action_diagnostics_generates_section_46_figures():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from ch04.diagnostics import plot_action_diagnostics
+
+    logits = torch.zeros(1, 16, 6, 256, requires_grad=True)
+    expert_pairs = np.array([[32, 32], [224, 224]])
+    marginal, joint = plot_action_diagnostics(
+        logits,
+        expert_pairs=expert_pairs,
+        example=0,
+        timestep=0,
+        dims=(4, 5),
+        support_radius=12.0,
+        n_samples=20,
+    )
+
+    assert marginal.axes[0].get_xlabel() == "bin id"
+    assert joint.axes[0].get_xlabel() == "first control bin"
+    assert joint.axes[0].get_legend_handles_labels()[1] == [
+        "expert support",
+        "supported samples",
+        "unsupported samples",
+    ]
+    plt.close(marginal)
+    plt.close(joint)

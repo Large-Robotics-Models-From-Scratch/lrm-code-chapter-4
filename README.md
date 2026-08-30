@@ -80,22 +80,21 @@ cell retries shallow clones three times and prints Git's stderr.
   bins, and returns NumPy `int64` bin ids.
 - SmolLM2 remains at its native 49,152-row vocabulary. The optional AR
   head uses a separate 256-entry action embedding table indexed by bin id.
-- One label is `[H, D] = [16, 6]`, flattened timestep-major to 96 action
-  tokens. Padding is repeated across the six controls and excluded from
-  the loss before averaging.
+- One label is `[H, D] = [16, 6]`. The shipped parallel head keeps this
+  shape and returns logits `[B, H, D, bins]`; only the optional AR branch
+  flattens the grid into 96 scalar action tokens. Padding is expanded over
+  the six controls and excluded from the loss before averaging.
 - Chapter 3 receives raw `[0,1]` images `[B,2,3,H,W]`, padded native text
   ids, a text attention mask, and normalized state `[B,6]`. It owns image
   resizing, direct multimodal concatenation, and compact position ids.
-- The six-value proprioceptive vector becomes one observation token. This is
-  intentionally asymmetric with the discrete head's one output token per
-  control dimension: input token count is a representation choice, while
-  per-control output bins avoid a combinatorial joint-action vocabulary.
-  SmolVLA likewise projects the complete current state into one prefix token;
-  RT-1 is an example of a categorical policy that discretizes each action
-  dimension separately.
-- The parallel head extends Chapter 3's observation prefix with one learned
-  576-wide slot per action-grid cell and contextualizes the complete block
-  with a custom bidirectional action mask.
+- The six-value proprioceptive vector becomes one observation token. The
+  parallel head follows SmolVLA's vector layout: one action position per
+  future timestep, with a readout covering all controls. Chapter 4 makes
+  that readout categorical (`D x bins`) instead of reproducing SmolVLA's
+  continuous flow-matching objective.
+- The parallel head extends Chapter 3's observation prefix with `H` learned
+  576-wide action positions and contextualizes the suffix with a custom
+  bidirectional action mask.
 - Training keeps SigLIP frozen while updating the Chapter 3 projection,
   state encoder, language backbone, and action head at separate learning
   rates. Checkpoints include the full policy, normalization statistics,

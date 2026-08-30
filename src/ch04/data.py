@@ -284,19 +284,19 @@ def action_targets(
     tokenizer,
     device: torch.device | str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return flattened action bins and the matching token pad mask."""
+    """Return ``[B, H, D]`` action bins and matching padding flags."""
     actions = torch.as_tensor(batch["action"]).float()
     if actions.ndim != 3:
         raise ValueError("chunked actions must have shape [B, H, D]")
     normalized = normalize_from_stats(actions, stats, "action")
     bins_np = tokenizer.encode(normalized.cpu().numpy())
-    bins = torch.from_numpy(bins_np).reshape(actions.shape[0], -1)
+    bins = torch.from_numpy(bins_np).reshape(actions.shape)
 
     timestep_pad = batch.get("action_is_pad")
     if timestep_pad is None:
         timestep_pad = torch.zeros(actions.shape[:2], dtype=torch.bool)
     timestep_pad = torch.as_tensor(timestep_pad, dtype=torch.bool)
-    pad = timestep_pad.repeat_interleave(actions.shape[-1], dim=1)
+    pad = timestep_pad.unsqueeze(-1).expand_as(bins)
     return bins.to(device), pad.to(device)
 
 

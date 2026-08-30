@@ -10,12 +10,12 @@ def expand_timestep_pad_mask(
     pad_mask: torch.Tensor,
     action_dim: int,
 ) -> torch.Tensor:
-    """Expand ``[B, H]`` padding flags to grid order ``[B, H * D]``."""
+    """Expand ``[B, H]`` padding flags to ``[B, H, D]``."""
     if pad_mask.ndim != 2 or pad_mask.dtype != torch.bool:
         raise ValueError("pad_mask must be a bool tensor shaped [B, H]")
     if action_dim < 1:
         raise ValueError("action_dim must be positive")
-    return pad_mask.repeat_interleave(action_dim, dim=1)
+    return pad_mask.unsqueeze(-1).expand(-1, -1, action_dim)
 
 
 def masked_token_cross_entropy(
@@ -24,9 +24,12 @@ def masked_token_cross_entropy(
     pad_mask: torch.Tensor | None = None,
     label_smoothing: float = 0.05,
 ) -> torch.Tensor:
-    """Mean token CE after excluding padded cells."""
-    if logits.ndim != 3 or target_bins.shape != logits.shape[:2]:
-        raise ValueError("expected logits [B, G, bins] and targets [B, G]")
+    """Mean categorical CE after excluding padded action cells."""
+    if (
+        logits.ndim != target_bins.ndim + 1
+        or target_bins.shape != logits.shape[:-1]
+    ):
+        raise ValueError("targets must match every logits axis except bins")
     if not 0.0 <= label_smoothing < 1.0:
         raise ValueError("label_smoothing must lie in [0, 1)")
     losses = F.cross_entropy(

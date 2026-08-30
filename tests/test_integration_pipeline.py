@@ -18,7 +18,10 @@ def test_real_backbone_parallel_head_contract():
     text = backbone.tokenizer(
         ["pick up the object"], padding=True, return_tensors="pt"
     )
-    images = torch.rand(1, 2, 3, 224, 224)
+    # Exercise the real Chapter 2 -> Chapter 3 handoff. Chapter 4 must
+    # not pre-resize frames: VisionEncoder owns the one shared bicubic
+    # preprocessing path.
+    images = torch.rand(1, 2, 3, 480, 640)
     state = torch.rand(1, 6)
     with torch.no_grad():
         logits = head(
@@ -27,7 +30,7 @@ def test_real_backbone_parallel_head_contract():
             state,
             text.attention_mask.bool(),
         )
-    assert logits.shape == (1, 96, 256)
+    assert logits.shape == (1, 16, 6, 256)
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
 

@@ -94,7 +94,13 @@ class AutoregressiveActionHead(nn.Module):
         action_hidden = hidden[:, prefix.shape[1] - 1 :].to(
             self.action_decoder.weight.dtype
         )
-        return self.action_decoder(action_hidden).float()
+        logits = self.action_decoder(action_hidden)
+        return logits.view(
+            target_bins.shape[0],
+            self.horizon,
+            self.action_dim,
+            self.n_bins,
+        ).float()
 
     def loss(
         self,
@@ -107,8 +113,14 @@ class AutoregressiveActionHead(nn.Module):
         label_smoothing: float = 0.05,
     ) -> torch.Tensor:
         target_bins = self._flatten_targets(target_bins)
-        if pad_mask is not None and pad_mask.shape[1] == self.horizon:
-            pad_mask = pad_mask.repeat_interleave(self.action_dim, dim=1)
+        target_grid = target_bins.view(
+            -1, self.horizon, self.action_dim
+        )
+        if pad_mask is not None:
+            if pad_mask.ndim == 2 and pad_mask.shape[1] == self.horizon:
+                pad_mask = pad_mask.unsqueeze(-1).expand_as(target_grid)
+            elif pad_mask.ndim == 2 and pad_mask.shape[1] == self.grid:
+                pad_mask = pad_mask.view_as(target_grid)
         logits = self.teacher_forced_logits(
             images,
             input_ids,
@@ -118,7 +130,7 @@ class AutoregressiveActionHead(nn.Module):
         )
         return masked_token_cross_entropy(
             logits,
-            target_bins,
+            target_grid,
             pad_mask=pad_mask,
             label_smoothing=label_smoothing,
         )
