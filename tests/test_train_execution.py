@@ -9,6 +9,7 @@ from ch04.decoding import evaluation_mode
 from ch04.execution import TemporalEnsembler, execute_chunk
 from ch04.train import (
     action_head_logits,
+    action_metrics,
     backbone_parameters,
     head_parameters,
     make_optimizer,
@@ -200,9 +201,78 @@ def test_training_continues_after_loader_epoch_boundary(
         warmup_steps=0,
         log_every=1,
     )
-    assert [record["step"] for record in history] == [0.0, 1.0]
+    assert [record["step"] for record in history] == [1.0, 2.0]
     assert history[0]["head_lr"] == pytest.approx(1e-4)
     assert history[0]["backbone_lr"] == pytest.approx(1e-5)
+
+
+def test_action_metrics_report_per_control_accuracy_and_mae(fake_stats):
+    batch = _batch()
+    tokenizer = _tokenizer()
+    from ch04.data import action_targets
+
+    bins, pad = action_targets(batch, fake_stats, tokenizer, "cpu")
+    logits = torch.full((*bins.shape, tokenizer.n_bins), -20.0)
+    logits.scatter_(-1, bins.unsqueeze(-1), 20.0)
+    metrics = action_metrics(
+        logits, bins, pad, batch["action"], fake_stats, tokenizer
+    )
+    assert metrics["accuracy"] == pytest.approx(1.0)
+    assert metrics["accuracy_by_control"] == pytest.approx([1.0] * 6)
+    assert len(metrics["mae_in_std_by_control"]) == 6
+    assert len(metrics["mae_raw_by_control"]) == 6
+
+
+def test_tensorboard_receives_loss_accuracy_and_per_control_metrics(
+    fake_backbone, fake_stats, monkeypatch, tmp_path
+):
+    import ch04.train as train_module
+    from ch04 import ParallelDecodeActionHead
+
+    class Writer:
+        def __init__(self):
+            self.scalars = []
+            self.closed = False
+
+        def add_scalar(self, tag, value, step):
+            self.scalars.append((tag, float(value), step))
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    writer = Writer()
+    monkeypatch.setattr(
+        train_module, "_make_summary_writer", lambda *_: writer
+    )
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    train_action_head(
+        head,
+        fake_backbone,
+        [_batch()],
+        fake_stats,
+        _tokenizer(),
+        "cpu",
+        total_steps=1,
+        warmup_steps=0,
+        log_every=1,
+        validation_loader=[_batch()],
+        validate_every=1,
+        tensorboard_log_dir=tmp_path,
+    )
+    tags = {tag for tag, _, _ in writer.scalars}
+    for expected in (
+        "loss/train",
+        "loss/held_out",
+        "accuracy/train",
+        "accuracy/held_out",
+        "accuracy_by_control/train_0",
+        "mae_in_std_by_control/held_out_5",
+    ):
+        assert expected in tags
+    assert writer.closed
 
 
 def test_held_out_loss_respects_its_batch_bound(
@@ -317,14 +387,14 @@ def test_history_carries_the_held_out_curve(fake_backbone, fake_stats):
         "cpu", total_steps=4, warmup_steps=0, log_every=1,
         validation_loader=[batch], validate_every=2,
     )
-    assert [record["step"] for record in history] == [0.0, 1.0, 2.0, 3.0]
+    assert [record["step"] for record in history] == [1.0, 2.0, 3.0, 4.0]
     measured = [
         record["step"] for record in history
         if not math.isnan(record["validation_loss"])
     ]
     # Validation runs after steps 2 and 4, annotating those records only,
     # so matplotlib skips the rest as NaN instead of drawing a staircase.
-    assert measured == [1.0, 3.0]
+    assert measured == [2.0, 4.0]
     assert all(
         record["validation_loss"] > 0
         for record in history

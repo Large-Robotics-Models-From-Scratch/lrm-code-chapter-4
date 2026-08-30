@@ -10,8 +10,24 @@ from pathlib import Path
 import torch
 
 from ch04.backbone_adapter import encode_prefix, gather_state_hidden
-from ch04.data import action_targets, prepare_batch
+from ch04.data import (
+    action_targets,
+    denormalize_from_stats,
+    normalize_from_stats,
+    prepare_batch,
+)
 from ch04.losses import masked_token_cross_entropy
+
+
+def _make_summary_writer(log_dir: str | Path, purge_step: int | None):
+    """Construct TensorBoard lazily so head-only use stays lightweight."""
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ImportError as error:
+        raise ImportError(
+            "TensorBoard logging requires `pip install tensorboard`"
+        ) from error
+    return SummaryWriter(log_dir=str(log_dir), purge_step=purge_step)
 
 
 def head_parameters(head, backbone) -> list[torch.nn.Parameter]:
@@ -171,8 +187,66 @@ def action_head_logits(
     return head(gather_state_hidden(hidden))
 
 
+def action_metrics(
+    logits: torch.Tensor,
+    target_bins: torch.Tensor,
+    pad: torch.Tensor,
+    raw_actions,
+    stats,
+    tokenizer,
+) -> dict[str, object]:
+    """Token accuracy and decoded MAE, overall and per control.
+
+    ``mae_in_std`` compares decoded bin centres with the demonstrated
+    actions after Chapter 2 z-score normalization. A value of 1.0 means
+    one training-set standard deviation. ``mae_raw`` inverts that
+    normalization and is reported in the dataset's native joint units.
+    """
+    if (
+        logits.shape[:-1] != target_bins.shape
+        or pad.shape != target_bins.shape
+    ):
+        raise ValueError("logits, targets, and padding shapes do not align")
+    keep = ~pad
+    if not bool(keep.any()):
+        raise ValueError("the batch contains no valid action tokens")
+    predictions = logits.argmax(dim=-1)
+    correct = (predictions == target_bins) & keep
+    counts = keep.sum(dim=(0, 1))
+    accuracy_by_control = correct.sum(dim=(0, 1)).float() / counts
+
+    decoded = tokenizer.decode(predictions.detach().cpu().numpy())
+    decoded_std = torch.from_numpy(decoded).to(
+        target_bins.device, dtype=logits.dtype
+    )
+    targets_raw = torch.as_tensor(
+        raw_actions, device=target_bins.device, dtype=decoded_std.dtype
+    )
+    targets_std = normalize_from_stats(targets_raw, stats, "action")
+    decoded_raw = denormalize_from_stats(decoded_std, stats, "action")
+    mae_std_by_control = (
+        ((decoded_std - targets_std).abs() * keep).sum(dim=(0, 1))
+        / counts
+    )
+    mae_raw_by_control = (
+        ((decoded_raw - targets_raw).abs() * keep).sum(dim=(0, 1))
+        / counts
+    )
+    return {
+        "accuracy": float(correct.sum() / keep.sum()),
+        "accuracy_by_control": accuracy_by_control.detach().cpu().tolist(),
+        "mae_in_std": float(
+            ((decoded_std - targets_std).abs() * keep).sum() / keep.sum()
+        ),
+        "mae_in_std_by_control": (
+            mae_std_by_control.detach().cpu().tolist()
+        ),
+        "mae_raw_by_control": mae_raw_by_control.detach().cpu().tolist(),
+    }
+
+
 @torch.no_grad()
-def held_out_loss(
+def held_out_metrics(
     head,
     backbone,
     loader: Iterable[Mapping[str, object]],
@@ -181,8 +255,8 @@ def held_out_loss(
     device: torch.device | str,
     label_smoothing: float = 0.05,
     max_batches: int | None = None,
-) -> float:
-    """Dataset-level token CE on an episode-disjoint validation loader.
+) -> dict[str, object]:
+    """Loss, token accuracy, and decoded MAE on held-out episodes.
 
     ``max_batches`` bounds the evaluation. The SO-101 split holds roughly
     1,200 held-out frames, so an unbounded pass costs one backbone forward
@@ -200,6 +274,9 @@ def held_out_loss(
     backbone.eval()
     loss_sum = 0.0
     valid_count = 0
+    correct = None
+    mae_std = None
+    mae_raw = None
     try:
         for index, batch in enumerate(loader):
             if max_batches is not None and index >= max_batches:
@@ -221,6 +298,37 @@ def held_out_loss(
             count = int(keep.sum())
             loss_sum += float(loss) * count
             valid_count += count
+            metrics = action_metrics(
+                logits,
+                bins,
+                pad,
+                batch["action"],
+                stats,
+                tokenizer,
+            )
+            control_counts = keep.sum(dim=(0, 1)).cpu().double()
+            batch_correct = (
+                torch.tensor(metrics["accuracy_by_control"])
+                * control_counts
+            )
+            batch_mae_std = (
+                torch.tensor(metrics["mae_in_std_by_control"])
+                * control_counts
+            )
+            batch_mae_raw = (
+                torch.tensor(metrics["mae_raw_by_control"])
+                * control_counts
+            )
+            if correct is None:
+                correct = batch_correct
+                mae_std = batch_mae_std
+                mae_raw = batch_mae_raw
+                counts_by_control = control_counts
+            else:
+                correct += batch_correct
+                mae_std += batch_mae_std
+                mae_raw += batch_mae_raw
+                counts_by_control += control_counts
     finally:
         for module, training in modes:
             module.training = training
@@ -228,7 +336,43 @@ def held_out_loss(
         raise ValueError(
             "validation loader produced no valid action tokens"
         )
-    return loss_sum / valid_count
+    accuracy_by_control = (correct / counts_by_control).tolist()
+    mae_std_by_control = (mae_std / counts_by_control).tolist()
+    mae_raw_by_control = (mae_raw / counts_by_control).tolist()
+    return {
+        "loss": loss_sum / valid_count,
+        "accuracy": float(correct.sum() / counts_by_control.sum()),
+        "accuracy_by_control": accuracy_by_control,
+        "mae_in_std": float(mae_std.sum() / counts_by_control.sum()),
+        "mae_in_std_by_control": mae_std_by_control,
+        "mae_raw_by_control": mae_raw_by_control,
+    }
+
+
+@torch.no_grad()
+def held_out_loss(
+    head,
+    backbone,
+    loader: Iterable[Mapping[str, object]],
+    stats,
+    tokenizer,
+    device: torch.device | str,
+    label_smoothing: float = 0.05,
+    max_batches: int | None = None,
+) -> float:
+    """Backward-compatible scalar view of :func:`held_out_metrics`."""
+    return float(
+        held_out_metrics(
+            head,
+            backbone,
+            loader,
+            stats,
+            tokenizer,
+            device,
+            label_smoothing,
+            max_batches,
+        )["loss"]
+    )
 
 
 def _checkpoint_payload(
@@ -239,6 +383,7 @@ def _checkpoint_payload(
     optimizer,
     scheduler,
     validation_loss: float | None,
+    validation_metrics: Mapping[str, object] | None,
     stats,
     tokenizer,
     config,
@@ -249,6 +394,7 @@ def _checkpoint_payload(
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "validation_loss": validation_loss,
+        "validation_metrics": validation_metrics,
         "normalization": stats,
         "tokenizer": {
             "lo": torch.from_numpy(tokenizer.lo.copy()),
@@ -281,6 +427,7 @@ def train_action_head(
     snapshot_steps: tuple[int, ...] = (),
     validate_every: int | None = None,
     validation_batches: int | None = 32,
+    tensorboard_log_dir: str | Path | None = None,
 ) -> list[dict[str, float]]:
     """Train a factorized, autoregressive, or parallel action head.
 
@@ -296,6 +443,11 @@ def train_action_head(
     column directly gives the measured points and nothing else. Validation
     runs every ``validate_every`` steps, defaulting to ``checkpoint_every``,
     and always once at the final step.
+
+    When ``tensorboard_log_dir`` is set, loss, accuracy, decoded MAE,
+    predictive entropy, per-control metrics, and both learning rates are
+    streamed as scalars. The writer uses the restored step as
+    ``purge_step`` when resuming.
     """
     if total_steps < 1:
         raise ValueError("total_steps must be positive")
@@ -374,6 +526,12 @@ def train_action_head(
         if saved_validation is not None:
             best_validation = float(saved_validation)
 
+    writer = None
+    if tensorboard_log_dir is not None:
+        writer = _make_summary_writer(
+            tensorboard_log_dir, step if step > 0 else None
+        )
+
     while step < total_steps:
         saw_batch = False
         for batch in loader:
@@ -406,20 +564,6 @@ def train_action_head(
             optimizer.step()
             scheduler.step()
 
-            log_now = step % log_every == 0
-            if log_now:
-                log_probs = logits.float().log_softmax(-1)
-                token_entropy = -(log_probs.exp() * log_probs).sum(-1)
-                record = {
-                    "step": float(step),
-                    "loss": float(loss.detach()),
-                    "entropy": float(token_entropy[~pad].mean().detach()),
-                    "head_lr": step_head_lr,
-                    "backbone_lr": step_backbone_lr,
-                    "validation_loss": float("nan"),
-                }
-                history.append(record)
-
             completed_step = step + 1
             should_checkpoint = (
                 checkpoint_path is not None
@@ -434,9 +578,54 @@ def train_action_head(
                     and completed_step % validate_every == 0
                 )
             )
+            log_now = (
+                completed_step == 1
+                or completed_step % log_every == 0
+                or completed_step == total_steps
+                or should_validate
+            )
+            if log_now:
+                log_probs = logits.float().log_softmax(-1)
+                token_entropy = -(log_probs.exp() * log_probs).sum(-1)
+                metrics = action_metrics(
+                    logits,
+                    bins,
+                    pad,
+                    batch["action"],
+                    stats,
+                    tokenizer,
+                )
+                record = {
+                    "step": float(completed_step),
+                    "loss": float(loss.detach()),
+                    "entropy": float(token_entropy[~pad].mean().detach()),
+                    "head_lr": step_head_lr,
+                    "backbone_lr": step_backbone_lr,
+                    "validation_loss": float("nan"),
+                    "accuracy": metrics["accuracy"],
+                    "mae_in_std": metrics["mae_in_std"],
+                    "validation_accuracy": float("nan"),
+                    "validation_mae_in_std": float("nan"),
+                }
+                for index in range(len(metrics["accuracy_by_control"])):
+                    record[f"accuracy_dim_{index}"] = metrics[
+                        "accuracy_by_control"
+                    ][index]
+                    record[f"mae_in_std_dim_{index}"] = metrics[
+                        "mae_in_std_by_control"
+                    ][index]
+                    record[f"validation_accuracy_dim_{index}"] = float(
+                        "nan"
+                    )
+                    record[f"validation_mae_in_std_dim_{index}"] = float(
+                        "nan"
+                    )
+                history.append(record)
+
             validation = None
+            validation_metrics = None
             if should_validate:
-                validation = held_out_loss(
+                validation_metrics = held_out_metrics(
                     head,
                     backbone,
                     validation_loader,
@@ -446,17 +635,102 @@ def train_action_head(
                     label_smoothing,
                     validation_batches,
                 )
+                validation = float(validation_metrics["loss"])
                 if history:
                     history[-1]["validation_loss"] = validation
+                    history[-1]["validation_accuracy"] = (
+                        validation_metrics["accuracy"]
+                    )
+                    history[-1]["validation_mae_in_std"] = (
+                        validation_metrics["mae_in_std"]
+                    )
+                    for index in range(
+                        len(validation_metrics["accuracy_by_control"])
+                    ):
+                        history[-1][
+                            f"validation_accuracy_dim_{index}"
+                        ] = validation_metrics["accuracy_by_control"][index]
+                        history[-1][
+                            f"validation_mae_in_std_dim_{index}"
+                        ] = validation_metrics[
+                            "mae_in_std_by_control"
+                        ][index]
                 head.train()
                 backbone.train()
+            if writer is not None and log_now:
+                writer.add_scalar(
+                    "loss/train", history[-1]["loss"], completed_step
+                )
+                writer.add_scalar(
+                    "entropy/train",
+                    history[-1]["entropy"],
+                    completed_step,
+                )
+                writer.add_scalar(
+                    "learning_rate/head", step_head_lr, completed_step
+                )
+                writer.add_scalar(
+                    "learning_rate/backbone",
+                    step_backbone_lr,
+                    completed_step,
+                )
+                writer.add_scalar(
+                    "accuracy/train",
+                    history[-1]["accuracy"],
+                    completed_step,
+                )
+                writer.add_scalar(
+                    "mae_in_std/train",
+                    history[-1]["mae_in_std"],
+                    completed_step,
+                )
+                for index in range(getattr(head, "action_dim", 0)):
+                    writer.add_scalar(
+                        f"accuracy_by_control/train_{index}",
+                        history[-1][f"accuracy_dim_{index}"],
+                        completed_step,
+                    )
+                    writer.add_scalar(
+                        f"mae_in_std_by_control/train_{index}",
+                        history[-1][f"mae_in_std_dim_{index}"],
+                        completed_step,
+                    )
+            if writer is not None and validation is not None:
+                writer.add_scalar(
+                    "loss/held_out", validation, completed_step
+                )
+                writer.add_scalar(
+                    "accuracy/held_out",
+                    validation_metrics["accuracy"],
+                    completed_step,
+                )
+                writer.add_scalar(
+                    "mae_in_std/held_out",
+                    validation_metrics["mae_in_std"],
+                    completed_step,
+                )
+                for index in range(getattr(head, "action_dim", 0)):
+                    writer.add_scalar(
+                        f"accuracy_by_control/held_out_{index}",
+                        validation_metrics["accuracy_by_control"][index],
+                        completed_step,
+                    )
+                    writer.add_scalar(
+                        f"mae_in_std_by_control/held_out_{index}",
+                        validation_metrics["mae_in_std_by_control"][index],
+                        completed_step,
+                    )
             if log_now:
                 message = (
-                    f"[{step:6d}] loss={history[-1]['loss']:.3f} "
-                    f"ent={history[-1]['entropy']:.2f}"
+                    f"[{completed_step:6d}] loss={history[-1]['loss']:.3f} "
+                    f"acc={history[-1]['accuracy']:.1%} "
+                    f"mae/std={history[-1]['mae_in_std']:.3f}"
                 )
                 if validation is not None:
-                    message += f" val={validation:.3f}"
+                    message += (
+                        f" val={validation:.3f} "
+                        f"val_acc={validation_metrics['accuracy']:.1%}"
+                    )
                 print(message)
             if should_checkpoint:
                 payload = _checkpoint_payload(
@@ -466,6 +740,7 @@ def train_action_head(
                     optimizer=optimizer,
                     scheduler=scheduler,
                     validation_loss=validation,
+                    validation_metrics=validation_metrics,
                     stats=stats,
                     tokenizer=tokenizer,
                     config=config,
@@ -479,9 +754,14 @@ def train_action_head(
                         payload,
                         checkpoint_path / f"step{completed_step:06d}.pt",
                     )
+                if writer is not None:
+                    writer.flush()
             step = completed_step
             if step >= total_steps:
                 break
         if not saw_batch:
             raise ValueError("loader produced no batches")
+    if writer is not None:
+        writer.flush()
+        writer.close()
     return history

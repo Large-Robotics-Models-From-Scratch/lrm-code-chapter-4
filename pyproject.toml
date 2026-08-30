@@ -18,6 +18,7 @@ dependencies = [
     "transformers>=5.0,<6.0",
     "numpy>=1.24,<3.0",
     "matplotlib>=3.7,<4.0",
+    "tensorboard>=2.15,<3.0",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +51,7 @@ dev = [
 [project.scripts]
 ch04-train = "ch04.cli:main"
 ch04-figures = "ch04.figures:main"
+ch04-so101-replay = "ch04.so101:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

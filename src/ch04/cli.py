@@ -103,7 +103,7 @@ def _train_one_head(
     """Fit one head on a fresh backbone and return its run summary."""
     from ch04.analysis import set_seed
     from ch04.decoding import evaluate_open_loop
-    from ch04.train import held_out_loss, train_action_head
+    from ch04.train import held_out_metrics, train_action_head
 
     train_loader, validation_loader, stats, tokenizer = loaders
     set_seed(arguments.seed)
@@ -116,6 +116,11 @@ def _train_one_head(
     ).to(device)
 
     checkpoint_dir = Path(arguments.checkpoint_dir) / name
+    tensorboard_dir = (
+        Path(arguments.tensorboard_dir) / name
+        if arguments.tensorboard_dir is not None
+        else None
+    )
     started = time.perf_counter()
     interrupted = False
     try:
@@ -138,13 +143,14 @@ def _train_one_head(
             resume_from=arguments.resume_from,
             validation_batches=arguments.validation_batches,
             snapshot_steps=tuple(arguments.snapshot_steps),
+            tensorboard_log_dir=tensorboard_dir,
         )
     except KeyboardInterrupt:
         interrupted = True
         history = []
     elapsed = time.perf_counter() - started
 
-    validation = held_out_loss(
+    validation = held_out_metrics(
         head,
         backbone,
         validation_loader,
@@ -171,8 +177,22 @@ def _train_one_head(
         ),
         "wall_clock_s": round(elapsed, 1),
         "interrupted": interrupted,
-        "validation_token_ce": validation,
+        "validation_token_ce": validation["loss"],
+        "validation_token_accuracy": validation["accuracy"],
+        "validation_accuracy_by_control": validation[
+            "accuracy_by_control"
+        ],
+        "validation_mae_in_std": validation["mae_in_std"],
+        "validation_mae_in_std_by_control": validation[
+            "mae_in_std_by_control"
+        ],
+        "validation_mae_raw_by_control": validation[
+            "mae_raw_by_control"
+        ],
         "history": history,
+        "tensorboard_log_dir": (
+            str(tensorboard_dir) if tensorboard_dir is not None else None
+        ),
     }
     if arguments.open_loop_batches > 0:
         import itertools
@@ -192,6 +212,19 @@ def _train_one_head(
             metrics["mae_in_standard_deviations"].nanmean()
         )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if history:
+        import matplotlib.pyplot as plt
+
+        from ch04.diagnostics import plot_per_joint_metrics
+        from ch04.so101 import SO101_ACTION_NAMES
+        from ch04.style import head_label, use_manuscript_style
+
+        use_manuscript_style()
+        figure = plot_per_joint_metrics(
+            history, SO101_ACTION_NAMES, title=head_label(name)
+        )
+        figure.savefig(checkpoint_dir / "per_joint_metrics.png")
+        plt.close(figure)
     (checkpoint_dir / "summary.json").write_text(
         json.dumps(summary, indent=2)
     )
@@ -252,6 +285,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-every", type=int, default=1_000)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument(
+        "--tensorboard-dir",
+        default=None,
+        help="optional root for per-head TensorBoard event logs",
+    )
+    parser.add_argument(
         "--snapshot-steps",
         type=int,
         nargs="*",
@@ -305,6 +343,21 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(arguments.checkpoint_dir)
     root.mkdir(parents=True, exist_ok=True)
     (root / "runs.json").write_text(json.dumps(summaries, indent=2))
+    histories = {
+        summary["head"]: summary["history"]
+        for summary in summaries
+        if summary["history"]
+    }
+    if histories:
+        import matplotlib.pyplot as plt
+
+        from ch04.diagnostics import plot_training_curves
+        from ch04.style import use_manuscript_style
+
+        use_manuscript_style()
+        figure = plot_training_curves(histories)
+        figure.savefig(root / "training_curves.png")
+        plt.close(figure)
     for summary in summaries:
         print(
             f"{summary['head']:>15}: "

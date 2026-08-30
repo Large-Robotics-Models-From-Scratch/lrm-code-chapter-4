@@ -33,6 +33,63 @@ def joint_mismatch_rate(
     return float(np.mean(x_high != y_high))
 
 
+def joint_logit_mass(
+    logits,
+    dims: tuple[int, int] = (4, 5),
+    timestep: int = 0,
+) -> np.ndarray:
+    """Return the pair mass implied directly by two categorical logits.
+
+    The result averages the outer product of the two cell softmaxes over
+    the batch. For factorized and parallel heads this is their exact
+    observation-conditioned pair distribution. Autoregressive logits are
+    teacher-forced, so the second marginal is conditioned on the
+    demonstrated preceding cells; callers should label that distinction.
+    """
+    import torch
+
+    values = torch.as_tensor(logits).float()
+    if values.ndim != 4:
+        raise ValueError("logits must have shape [B, H, D, bins]")
+    if not 0 <= timestep < values.shape[1]:
+        raise IndexError("timestep is outside the action horizon")
+    first, second = dims
+    controls = values.shape[2]
+    if not 0 <= first < controls or not 0 <= second < controls:
+        raise IndexError("control is outside the action grid")
+    if first == second:
+        raise ValueError("dims must select two different controls")
+    probabilities = values[:, timestep, [first, second]].softmax(dim=-1)
+    mass = torch.einsum(
+        "bi,bj->ij", probabilities[:, 0], probabilities[:, 1]
+    )
+    mass = mass / probabilities.shape[0]
+    return mass.detach().cpu().numpy()
+
+
+def joint_logit_mismatch_rate(
+    mass: np.ndarray,
+    split_first: int,
+    split_second: int,
+) -> float:
+    """Probability mass in the two off-diagonal high/low quadrants."""
+    values = np.asarray(mass, dtype=np.float64)
+    if values.ndim != 2 or min(values.shape) < 2:
+        raise ValueError("mass must be a non-empty two-dimensional grid")
+    if not 0 < split_first < values.shape[0]:
+        raise ValueError("split_first must lie inside the first axis")
+    if not 0 < split_second < values.shape[1]:
+        raise ValueError("split_second must lie inside the second axis")
+    total = values.sum()
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError("mass must have positive finite total probability")
+    off_diagonal = (
+        values[:split_first, split_second:].sum()
+        + values[split_first:, :split_second].sum()
+    )
+    return float(off_diagonal / total)
+
+
 def sample_cell_pairs(
     logits,
     first_cell: int,
@@ -177,7 +234,7 @@ def plot_action_distribution(probabilities, ax=None):
         _, ax = plt.subplots(figsize=(7, 3))
     axis = np.arange(probs.size)
     ax.fill_between(axis, probs, color=SUPPORTED_COLOR, alpha=0.25, lw=0)
-    ax.plot(axis, probs, color=SUPPORTED_COLOR, lw=1.4)
+    ax.plot(axis, probs, color=SUPPORTED_COLOR, lw=1.15)
     peak = int(np.argmax(probs))
     ax.annotate(
         f"mode: bin {peak}",
@@ -267,16 +324,15 @@ def plot_chunk_comparison(predicted, expert, joint_names=None):
     for index, axis in enumerate(axes):
         axis.plot(
             target[:, index], label="expert", color=EXPERT_COLOR,
-            lw=1.9, alpha=0.75, marker="o", ms=3,
+            lw=1.25, alpha=0.78,
         )
         axis.plot(
             pred[:, index], label="policy", color=POLICY_COLOR,
-            lw=1.4, marker="s", ms=3,
+            lw=1.05,
         )
         axis.set_ylabel(names[index], fontsize=9)
     axes[0].legend(loc="upper left", ncols=2)
     axes[-1].set_xlabel("chunk timestep (0 = now)")
-    fig.tight_layout()
     return fig
 
 
@@ -314,7 +370,7 @@ def plot_bimodal_comparison(
     ax.axvline(
         mse_prediction,
         color=POLICY_COLOR,
-        lw=2.2,
+        lw=1.35,
         label=f"MSE prediction ({mse_prediction:+.3f})",
     )
     if mixture is not None:
@@ -324,7 +380,7 @@ def plot_bimodal_comparison(
             grid.numpy(),
             density.numpy(),
             color=SUPPORTED_COLOR,
-            lw=2.2,
+            lw=1.35,
             label="two-component Gaussian mixture",
         )
     ax.set(
@@ -333,7 +389,6 @@ def plot_bimodal_comparison(
         title="Regression collapses between modes; a mixture does not",
     )
     ax.legend(loc="upper center")
-    ax.figure.tight_layout()
     return ax.figure
 
 
@@ -410,14 +465,14 @@ def plot_neighbor_softmaxes(
             row,
             color=SUPPORTED_COLOR,
             alpha=0.45,
-            lw=1.0,
+            lw=0.8,
             label="individual softmax" if index == 0 else None,
         )
     axes[1].plot(
         axis,
         probs.mean(axis=0),
         color=POLICY_COLOR,
-        lw=2.2,
+        lw=1.35,
         label="cluster mean",
     )
     axes[1].set(
@@ -430,7 +485,6 @@ def plot_neighbor_softmaxes(
         f"{probs.shape[0]} shown)"
     )
     axes[1].legend(loc="upper right")
-    figure.tight_layout()
     if caption:
         annotate_source(figure, caption)
     return figure
@@ -484,7 +538,7 @@ def plot_joint_mismatch_panels(
         )
         axis.scatter(
             expert[:, 0], expert[:, 1],
-            facecolor="none", edgecolor="#E8590C", linewidth=1.7,
+            facecolor="none", edgecolor="#E8590C", linewidth=0.9,
             s=70, label="demonstrated pairs", zorder=4,
         )
         axis.set(
@@ -500,11 +554,111 @@ def plot_joint_mismatch_panels(
         "Joint mismatch: sampled control pairs against expert support",
         y=1.0,
     )
-    figure.tight_layout()
     bar = figure.colorbar(
         mesh, ax=axes[0].tolist(), fraction=0.024, pad=0.015
     )
     bar.set_label("sampled draws per cell", fontsize=9)
+    return figure
+
+
+def plot_joint_logit_panels(
+    mass_by_head: dict,
+    expert_pairs: np.ndarray,
+    n_bins: int = 32,
+    bin_range: tuple[int, int] | None = None,
+    dim_labels: tuple[str, str] = ("A", "B"),
+):
+    """Figure 4.9 without Monte Carlo noise or overlaid point clouds.
+
+    The first panel is the normalized held-out histogram. Every remaining
+    panel is a normalized pair-mass grid computed directly from a head's
+    logits. All panels share bins, limits, and a colour scale, so sharpness
+    and off-support probability are visually comparable.
+    """
+    import matplotlib.pyplot as plt
+
+    if not mass_by_head:
+        raise ValueError("mass_by_head must contain at least one head")
+    expert = np.asarray(expert_pairs)
+    if expert.ndim != 2 or expert.shape[1] != 2 or expert.shape[0] == 0:
+        raise ValueError("expert_pairs must be non-empty with shape [M, 2]")
+    names = list(mass_by_head)
+    first_mass = np.asarray(mass_by_head[names[0]], dtype=np.float64)
+    if first_mass.ndim != 2 or first_mass.shape[0] != first_mass.shape[1]:
+        raise ValueError(
+            "each logit mass must be a square [bins, bins] grid"
+        )
+    model_bins = first_mass.shape[0]
+    limits = bin_range or (0, model_bins)
+    display_edges = np.linspace(limits[0], limits[1], n_bins + 1)
+    model_edges = np.linspace(limits[0], limits[1], model_bins + 1)
+
+    expert_mass = np.histogram2d(
+        expert[:, 0], expert[:, 1], bins=[display_edges, display_edges]
+    )[0]
+    expert_mass /= expert_mass.sum()
+    grids = {"expert": expert_mass}
+    for name in names:
+        mass = np.asarray(mass_by_head[name], dtype=np.float64)
+        if mass.shape != first_mass.shape:
+            raise ValueError("all logit masses must have the same shape")
+        if not np.isfinite(mass).all() or mass.sum() <= 0:
+            raise ValueError(
+                f"{name} logit mass must be finite and positive"
+            )
+        # Aggregate model bins into display cells without sampling. This
+        # keeps the image readable when the classifier uses 256 bins.
+        histogram = np.histogram2d(
+            np.repeat((model_edges[:-1] + model_edges[1:]) / 2, model_bins),
+            np.tile((model_edges[:-1] + model_edges[1:]) / 2, model_bins),
+            bins=[display_edges, display_edges],
+            weights=(mass / mass.sum()).reshape(-1),
+        )[0]
+        grids[name] = histogram
+
+    vmax = max(float(grid.max()) for grid in grids.values()) or 1.0
+    panel_names = ["expert", *names]
+    figure, axes = plt.subplots(
+        1,
+        len(panel_names),
+        figsize=(3.35 * len(panel_names) + 0.65, 3.25),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+    mesh = None
+    for axis, name in zip(axes[0], panel_names, strict=True):
+        mesh = axis.pcolormesh(
+            display_edges,
+            display_edges,
+            grids[name].T,
+            cmap="Blues",
+            vmin=0.0,
+            vmax=vmax,
+            shading="flat",
+            rasterized=True,
+        )
+        title = (
+            "held-out demonstrations"
+            if name == "expert"
+            else head_label(name)
+        )
+        colour = EXPERT_COLOR if name == "expert" else head_color(name)
+        axis.set(
+            xlabel=f"control {dim_labels[0]} bin",
+            xlim=limits,
+            ylim=limits,
+            title=title,
+        )
+        axis.title.set_color(colour)
+        axis.set_aspect("equal")
+        axis.grid(False)
+    axes[0][0].set_ylabel(f"control {dim_labels[1]} bin")
+    figure.suptitle("Joint mismatch from categorical probability mass")
+    bar = figure.colorbar(
+        mesh, ax=axes[0].tolist(), fraction=0.022, pad=0.018
+    )
+    bar.set_label("probability per displayed cell", fontsize=9)
     return figure
 
 
@@ -532,7 +686,7 @@ def plot_temporal_traces(samples_by_head: dict, control: int = 0):
             raise IndexError("control is outside the action grid")
         colour = head_color(name)
         for grid in grids[:12]:
-            axis.plot(grid[:, control], color=colour, alpha=0.45, lw=1.1)
+            axis.plot(grid[:, control], color=colour, alpha=0.28, lw=0.8)
         jitter = float(
             np.abs(np.diff(grids[:, :, control], axis=1)).mean()
         ) if grids.shape[1] > 1 else float("nan")
@@ -543,10 +697,7 @@ def plot_temporal_traces(samples_by_head: dict, control: int = 0):
             color=colour,
         )
     axes[0][0].set_ylabel(f"sampled bin, control {control}")
-    figure.suptitle(
-        "Independent per-cell sampling shows as temporal jitter", y=1.03
-    )
-    figure.tight_layout()
+    figure.suptitle("Independent per-cell sampling shows temporal jitter")
     return figure
 
 
@@ -572,8 +723,8 @@ def plot_execution_schedules(
         ax.plot(
             reference[:, control],
             color=EXPERT_COLOR,
-            lw=2.4,
-            alpha=0.55,
+            lw=1.35,
+            alpha=0.65,
             label="expert",
             zorder=1,
         )
@@ -586,7 +737,7 @@ def plot_execution_schedules(
             raise IndexError("control is outside the action vector")
         ax.plot(
             values[:, control],
-            lw=1.6,
+            lw=1.05,
             ls=dashes[index % len(dashes)],
             label=name,
         )
@@ -596,7 +747,6 @@ def plot_execution_schedules(
         title="Executing one chunk stream three ways",
     )
     ax.legend(ncols=2, loc="best")
-    ax.figure.tight_layout()
     return ax.figure
 
 
@@ -635,11 +785,11 @@ def plot_open_loop_episode(
     axes = np.atleast_1d(axes)
     for index, axis in enumerate(axes):
         axis.plot(
-            steps, target[:, index], label="expert", lw=1.9,
-            color=EXPERT_COLOR, alpha=0.75,
+            steps, target[:, index], label="expert", lw=1.25,
+            color=EXPERT_COLOR, alpha=0.78,
         )
         axis.plot(
-            steps, pred[:, index], label="policy", lw=1.4,
+            steps, pred[:, index], label="policy", lw=1.0,
             color=POLICY_COLOR,
         )
         axis.fill_between(
@@ -656,12 +806,11 @@ def plot_open_loop_episode(
     axes[0].legend(loc="upper left", ncols=2)
     axes[0].set_title("Open-loop chunk prediction on a held-out episode")
     axes[-1].set_xlabel("episode timestep (30 Hz)")
-    figure.tight_layout()
     return figure
 
 
 def plot_training_curves(histories: dict, log_scale: bool = False):
-    """Training and held-out cross-entropy for one or more heads.
+    """Training/held-out cross-entropy and overall token accuracy.
 
     ``histories`` maps a head name to the list :func:`train_action_head`
     returns. Held-out points are sparse by construction, so they are drawn
@@ -673,8 +822,7 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
 
     if not histories:
         raise ValueError("histories must contain at least one head")
-    figure, axes = plt.subplots(1, 2, figsize=(11, 3.6))
-    uniform = None
+    figure, axes = plt.subplots(1, 2, figsize=(11, 3.6), layout=None)
     for name, history in histories.items():
         if not history:
             raise ValueError(f"{name} has an empty history")
@@ -706,24 +854,47 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
             )
         axes[1].plot(
             steps,
-            [record["entropy"] for record in history],
+            [record["accuracy"] for record in history],
             color=style["color"],
             ls=style["linestyle"],
-            label=style["label"],
+            label=f"{style['label']} (train)",
         )
-        entropies = [record["entropy"] for record in history]
-        uniform = max(uniform or 0.0, max(entropies))
-
-    for axis, title, ylabel in (
-        (axes[0], "Cross-entropy per action token", "nats / token"),
-        (axes[1], "Predictive entropy per action token", "nats"),
-    ):
-        axis.set(xlabel="training step", ylabel=ylabel, title=title)
-        if uniform:
-            axis.axhline(
-                np.log(256), color=NEUTRAL_COLOR, ls=":", lw=1.2,
-                label="ln(256), uniform" if axis is axes[0] else None,
+        held_accuracy = [
+            (record["step"], record["validation_accuracy"])
+            for record in history
+            if not np.isnan(record.get("validation_accuracy", np.nan))
+        ]
+        if held_accuracy:
+            axes[1].plot(
+                [point[0] for point in held_accuracy],
+                [point[1] for point in held_accuracy],
+                color=style["color"],
+                marker=style["marker"],
+                ls="none",
+                ms=5,
+                markeredgecolor="white",
+                markeredgewidth=0.7,
+                label=f"{style['label']} (held out)",
             )
+
+    axes[0].set(
+        xlabel="training step",
+        ylabel="nats / token",
+        title="Cross-entropy per action token",
+    )
+    axes[0].axhline(
+        np.log(256),
+        color=NEUTRAL_COLOR,
+        ls=":",
+        lw=0.9,
+        label="ln(256), uniform",
+    )
+    axes[1].set(
+        xlabel="training step",
+        ylabel="exact bin accuracy",
+        title="Action-token accuracy",
+        ylim=(0.0, 1.0),
+    )
     if log_scale:
         axes[0].set_yscale("log")
     # One legend under both panels: an in-axes legend with three heads and
@@ -738,7 +909,101 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
         fontsize=8.5,
         frameon=False,
     )
-    figure.tight_layout()
+    # Reserve a dedicated strip for the shared legend. This prevents it
+    # from covering the curves, even with three heads plus validation.
+    figure.tight_layout(rect=(0, 0.16, 1, 1))
+    return figure
+
+
+def plot_per_joint_metrics(
+    history: list[dict[str, float]],
+    joint_names: list[str] | tuple[str, ...] | None = None,
+    title: str | None = None,
+):
+    """Small multiples for train/held-out accuracy and decoded MAE.
+
+    One column per control avoids covering six joint curves with one
+    another. MAE is measured after decoding the predicted bin centre in
+    z-score-normalized action space, so 1.0 is one training-set standard
+    deviation for that control.
+    """
+    import matplotlib.pyplot as plt
+
+    if not history:
+        raise ValueError("history must contain at least one record")
+    dimensions = sorted(
+        int(key.removeprefix("accuracy_dim_"))
+        for key in history[0]
+        if key.startswith("accuracy_dim_")
+    )
+    if not dimensions:
+        raise ValueError("history has no per-control metrics")
+    names = list(joint_names or [f"joint {index}" for index in dimensions])
+    if len(names) != len(dimensions):
+        raise ValueError("joint_names must contain one label per control")
+    steps = np.asarray([record["step"] for record in history])
+    figure, axes = plt.subplots(
+        2,
+        len(dimensions),
+        figsize=(2.15 * len(dimensions), 5.0),
+        sharex="col",
+        sharey="row",
+        squeeze=False,
+        layout=None,
+    )
+    for column, (dimension, name) in enumerate(
+        zip(dimensions, names, strict=True)
+    ):
+        accuracy = axes[0, column]
+        mae = axes[1, column]
+        accuracy.plot(
+            steps,
+            [record[f"accuracy_dim_{dimension}"] for record in history],
+            color=POLICY_COLOR,
+            label="train",
+        )
+        mae.plot(
+            steps,
+            [record[f"mae_in_std_dim_{dimension}"] for record in history],
+            color=POLICY_COLOR,
+            label="train",
+        )
+        for axis, key in (
+            (accuracy, f"validation_accuracy_dim_{dimension}"),
+            (mae, f"validation_mae_in_std_dim_{dimension}"),
+        ):
+            held = [
+                (record["step"], record.get(key, np.nan))
+                for record in history
+                if not np.isnan(record.get(key, np.nan))
+            ]
+            if held:
+                axis.plot(
+                    [point[0] for point in held],
+                    [point[1] for point in held],
+                    color=EXPERT_COLOR,
+                    marker="o",
+                    ls="none",
+                    ms=4,
+                    label="held out",
+                )
+        accuracy.set_title(name.replace(".pos", ""), fontsize=9)
+        accuracy.set_ylim(0.0, 1.0)
+        mae.set_ylim(0.0, None)
+        mae.set_xlabel("step")
+    axes[0, 0].set_ylabel("exact bin accuracy")
+    axes[1, 0].set_ylabel("MAE / training std")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.015),
+        ncols=2,
+        frameon=False,
+    )
+    figure.suptitle(title or "Per-control train and held-out metrics")
+    figure.tight_layout(rect=(0, 0.08, 1, 0.95))
     return figure
 
 
@@ -781,5 +1046,4 @@ def plot_head_comparison(summary: dict, metrics: dict | None = None):
         axis.margins(y=0.18)
         axis.tick_params(axis="x", rotation=12)
         axis.grid(axis="x", visible=False)
-    figure.tight_layout()
     return figure

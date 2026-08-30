@@ -99,7 +99,7 @@ def test_colab_produces_every_code_backed_figure():
     required = {
         "figure 4.4": "plot_bimodal_comparison",
         "figure 4.8": "neighborhood_softmax_figure",
-        "figure 4.9": "plot_joint_mismatch_panels",
+        "figure 4.9": "plot_joint_logit_panels",
         "section 4.6.2": "plot_temporal_traces",
         "figure 4.10": "plot_execution_schedules",
         "figure 4.11": "plot_open_loop_episode",
@@ -115,6 +115,17 @@ def test_colab_records_the_provenance_section_461_requires():
     code = _notebook_code()
     for token in ("ANCHOR_INDEX", "N_NEIGHBORS", "SEED", "set_seed"):
         assert token in code
+
+
+def test_colab_has_fixed_sanity_and_full_training_modes():
+    code = _notebook_code()
+    assert "RUN_MODE = 'sanity'" in code
+    assert "'sanity': dict(steps=10" in code
+    assert "'full': dict(steps=20_000" in code
+    assert "log_every=1" in code
+    assert "tensorboard_log_dir" in code
+    assert "plot_per_joint_metrics" in code
+    assert "export_action_chunk" in code
 
 def test_colab_setup_removes_only_broken_optional_torchaudio():
     path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"

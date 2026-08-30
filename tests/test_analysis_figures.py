@@ -8,9 +8,12 @@ import torch
 from ch04 import ActionTokenizer
 from ch04.analysis import (
     collect_cell_softmaxes,
+    collect_expert_pairs,
+    collect_joint_logit_mass,
     decoded_chunk_stream,
     expert_pairs_from_batch,
     joint_mismatch_samples,
+    logit_mismatch_rates,
     mismatch_rates,
     neighborhood_softmax_figure,
     open_loop_episode_trace,
@@ -23,13 +26,16 @@ from ch04.cli import (
     resolve_device,
 )
 from ch04.diagnostics import (
+    joint_logit_mass,
     nearest_state_neighbors,
     plot_bimodal_comparison,
     plot_execution_schedules,
     plot_head_comparison,
+    plot_joint_logit_panels,
     plot_joint_mismatch_panels,
     plot_neighbor_softmaxes,
     plot_open_loop_episode,
+    plot_per_joint_metrics,
     plot_temporal_traces,
     plot_training_curves,
 )
@@ -108,6 +114,24 @@ def test_joint_mismatch_panels_render_one_axis_per_head():
         plot_joint_mismatch_panels({"bad": np.zeros((4, 3))}, expert)
 
 
+def test_joint_logit_panels_compare_probability_without_sampling():
+    logits = torch.zeros(3, 1, 2, 4)
+    mass = joint_logit_mass(logits, dims=(0, 1))
+    np.testing.assert_allclose(mass, np.full((4, 4), 1 / 16))
+    rates = logit_mismatch_rates({"parallel": mass}, 2, 2)
+    assert rates["parallel"] == pytest.approx(0.5)
+    figure = plot_joint_logit_panels(
+        {"factorized": mass, "parallel": mass},
+        np.array([[0, 0], [3, 3]]),
+        n_bins=4,
+        bin_range=(0, 4),
+    )
+    # Expert plus two policy panels, followed by the shared colorbar.
+    assert len(figure.axes) == 4
+    assert figure.axes[0].get_title() == "held-out demonstrations"
+    plt.close(figure)
+
+
 def test_temporal_and_schedule_and_episode_figures():
     rng = np.random.default_rng(0)
     grids = {"parallel": rng.integers(0, 256, (4, 5, 6))}
@@ -138,13 +162,16 @@ def test_temporal_and_schedule_and_episode_figures():
 def test_training_curves_plot_train_and_sparse_held_out_points():
     history = [
         {"step": float(i), "loss": 5.5 - 0.1 * i, "entropy": 5.5,
-         "validation_loss": 5.4 - 0.1 * i if i % 2 else float("nan")}
+         "accuracy": 0.1 * i,
+         "validation_loss": 5.4 - 0.1 * i if i % 2 else float("nan"),
+         "validation_accuracy": 0.1 * i if i % 2 else float("nan")}
         for i in range(6)
     ]
     figure = plot_training_curves({"parallel": history})
-    loss_axis, entropy_axis = figure.axes
+    loss_axis, accuracy_axis = figure.axes
     assert loss_axis.get_ylabel() == "nats / token"
-    assert entropy_axis.get_xlabel() == "training step"
+    assert accuracy_axis.get_xlabel() == "training step"
+    assert accuracy_axis.get_ylabel() == "exact bin accuracy"
     labels = loss_axis.get_legend_handles_labels()[1]
     assert any("train" in label for label in labels)
     assert any("held out" in label for label in labels)
@@ -166,11 +193,33 @@ def test_training_curves_plot_train_and_sparse_held_out_points():
 def test_training_curves_handle_a_run_without_validation():
     history = [
         {"step": 0.0, "loss": 5.5, "entropy": 5.5,
-         "validation_loss": float("nan")}
+         "accuracy": 0.0, "validation_loss": float("nan"),
+         "validation_accuracy": float("nan")}
     ]
     figure = plot_training_curves({"factorized": history})
     labels = figure.axes[0].get_legend_handles_labels()[1]
     assert not any("held out" in label for label in labels)
+    plt.close(figure)
+
+
+def test_per_joint_metrics_use_small_multiples():
+    history = []
+    for step in range(3):
+        record = {"step": float(step)}
+        for dimension in range(2):
+            record[f"accuracy_dim_{dimension}"] = 0.1 * step
+            record[f"mae_in_std_dim_{dimension}"] = 1.0 - 0.1 * step
+            record[f"validation_accuracy_dim_{dimension}"] = (
+                0.2 if step == 2 else float("nan")
+            )
+            record[f"validation_mae_in_std_dim_{dimension}"] = (
+                0.8 if step == 2 else float("nan")
+            )
+        history.append(record)
+    figure = plot_per_joint_metrics(history, ["pan.pos", "lift.pos"])
+    assert len(figure.axes) == 4
+    assert figure.axes[0].get_title() == "pan"
+    assert figure.axes[2].get_ylabel() == "MAE / training std"
     plt.close(figure)
 
 
@@ -287,6 +336,27 @@ def test_joint_samples_and_mismatch_rate_per_head(
     rates = mismatch_rates(samples, 128, 128)
     assert set(rates) == set(heads)
     assert all(0.0 <= value <= 1.0 for value in rates.values())
+
+
+def test_collect_joint_logits_and_expert_pairs(
+    parallel_head, fake_backbone, fake_stats, chunk_batch
+):
+    loader = [chunk_batch(batch_size=3), chunk_batch(batch_size=2)]
+    mass = collect_joint_logit_mass(
+        parallel_head,
+        fake_backbone,
+        loader,
+        fake_stats,
+        _tokenizer(),
+        "cpu",
+        dims=(4, 5),
+    )
+    assert mass.shape == (256, 256)
+    assert mass.sum() == pytest.approx(1.0)
+    pairs = collect_expert_pairs(
+        loader, fake_stats, _tokenizer(), "cpu", dims=(4, 5)
+    )
+    assert pairs.shape == (5, 2)
 
 
 def test_sampled_grids_keep_the_full_action_grid(

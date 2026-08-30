@@ -116,10 +116,10 @@ def generate_all(
 
     from ch04.analysis import (
         collect_cell_softmaxes,
+        collect_expert_pairs,
+        collect_joint_logit_mass,
         decoded_chunk_stream,
-        expert_pairs_from_batch,
-        joint_mismatch_samples,
-        mismatch_rates,
+        logit_mismatch_rates,
         neighborhood_softmax_figure,
         open_loop_episode_trace,
         sampled_grids_by_head,
@@ -129,7 +129,7 @@ def generate_all(
     from ch04.decoding import evaluation_mode
     from ch04.diagnostics import (
         plot_execution_schedules,
-        plot_joint_mismatch_panels,
+        plot_joint_logit_panels,
         plot_open_loop_episode,
         plot_temporal_traces,
     )
@@ -194,33 +194,38 @@ def generate_all(
                     other, backbone, horizon=head.horizon
                 ).to(device).eval()
 
-    if compare_heads:
-        announce(
-            "figure 4.9: sampling every head. The autoregressive head "
-            f"decodes {head.horizon * head.action_dim} positions in "
-            "series, so this dominates the runtime on CPU."
-        )
-    else:
-        announce("figure 4.9: joint mismatch")
-    with evaluation_mode(head), evaluation_mode(backbone):
-        pairs = joint_mismatch_samples(
-            heads,
+    announce("figure 4.9: joint mismatch from logits")
+    masses = {
+        name: collect_joint_logit_mass(
+            peer,
             backbone,
-            model_inputs,
+            validation_loader,
+            stats,
+            tokenizer,
+            device,
             dims=dims,
             timestep=timestep,
-            n_samples=n_samples,
+            max_batches=max_batches,
         )
+        for name, peer in heads.items()
+    }
+    with evaluation_mode(head), evaluation_mode(backbone):
         grids = sampled_grids_by_head(
-            heads, backbone, model_inputs, n_samples=12
+            heads, backbone, model_inputs, n_samples=min(n_samples, 12)
         )
-    expert_pairs = expert_pairs_from_batch(
-        batch, stats, tokenizer, device, dims=dims, timestep=timestep
+    expert_pairs = collect_expert_pairs(
+        validation_loader,
+        stats,
+        tokenizer,
+        device,
+        dims=dims,
+        timestep=timestep,
+        max_batches=max_batches,
     )
     written["figure_4_9"] = str(
         _save(
-            plot_joint_mismatch_panels(
-                pairs,
+            plot_joint_logit_panels(
+                masses,
                 expert_pairs,
                 bin_range=(0, tokenizer.n_bins),
                 dim_labels=(str(dims[0]), str(dims[1])),
@@ -235,8 +240,8 @@ def generate_all(
         )
     )
     written["mismatch_rates"] = json.dumps(
-        mismatch_rates(
-            pairs, tokenizer.n_bins // 2, tokenizer.n_bins // 2
+        logit_mismatch_rates(
+            masses, tokenizer.n_bins // 2, tokenizer.n_bins // 2
         )
     )
 

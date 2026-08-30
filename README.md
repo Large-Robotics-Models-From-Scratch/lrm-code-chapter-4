@@ -31,6 +31,7 @@ src/ch04/
 ├── train.py                     # two-LR training + held-out checkpoints
 ├── decoding.py                  # temperature/top-p + open-loop MAE
 ├── execution.py                 # the three section 4.7.2 schedules
+├── so101.py                     # export + safety-gated chunk replay
 ├── diagnostics.py               # figure helpers (pure, array in / fig out)
 ├── analysis.py                  # drivers that run a head to make those arrays
 ├── exercises.py                 # MSE collapse + the section 4.2.2 mixture
@@ -77,13 +78,48 @@ ch04-train --head all --steps 20000 --batch-size 32
 ch04-train --head parallel --steps 20000 --checkpoint-dir checkpoints
 ```
 
+For a full run with live loss curves:
+
+```bash
+ch04-train --head all --steps 20000 \
+  --checkpoint-dir checkpoints \
+  --tensorboard-dir runs/ch04
+```
+
+```bash
+tensorboard --logdir runs/ch04
+```
+
 Each run writes `checkpoints/<head>/summary.json` with the configuration,
 wall clock, held-out token cross-entropy, loss history, and open-loop MAE,
-plus `latest.pt` and `best.pt`. A checkpoint carries the whole float32
+plus `latest.pt`, `best.pt`, and a combined
+`checkpoints/training_curves.png`. TensorBoard records `loss/train`,
+`loss/held_out`, overall and per-control token accuracy, overall and
+per-control MAE, `entropy/train`, and the head/backbone learning rates.
+A checkpoint carries the whole float32
 backbone and runs to roughly 1.9 GB, so permanent snapshots are opt-in via
 `--snapshot-steps 5000 20000`. `--resume-from` restores the model,
 optimizer, scheduler, and step count, and refuses a checkpoint whose
 configuration or tokenizer bounds differ.
+
+The reporting follows the useful part of OpenVLA's training loop:
+categorical loss is paired with exact action-token accuracy and decoded
+continuous L1 error, rather than treated as sufficient on its own. See
+OpenVLA's [official metric implementation](https://github.com/openvla/openvla/blob/main/prismatic/training/strategies/base_strategy.py).
+Chapter 4 reports these by control dimension as small multiples so six
+joint curves never obscure one another.
+
+`accuracy` means exact argmax-bin agreement over non-padded action cells.
+`mae_in_std` decodes the predicted bin centre in z-score-normalized action
+space and averages absolute error; 1.0 is one training-set standard
+deviation. `mae_raw_by_control` denormalizes both prediction and target
+before measuring each joint in the dataset's native command units. The
+headline open-loop MAE is the per-cell raw error divided by that control's
+training standard deviation and then averaged. These are imitation-fit
+metrics, not physical task-success rates. The train/held-out metrics read
+the logits used by the loss, so later autoregressive cells are
+teacher-forced. The separately reported open-loop MAE calls each head's
+actual inference path and does not provide future expert bins.
 
 ## Regenerating the figures
 
@@ -99,11 +135,12 @@ ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
 | --- | --- | --- |
 | 4.4 | `diagnostics.plot_bimodal_comparison` | MSE collapse against a two-component mixture |
 | 4.8 | `analysis.neighborhood_softmax_figure` | listing 4.9's held-out softmax cluster |
-| 4.9 | `diagnostics.plot_joint_mismatch_panels` | joint mismatch, one panel per head |
+| 4.9 | `diagnostics.plot_joint_logit_panels` | expert and direct logit-implied pair mass, separate panels |
 | §4.6.2 | `diagnostics.plot_temporal_traces` | sampled bins across a chunk, per head |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
 | 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands |
-| — | `diagnostics.plot_training_curves` | train and held-out CE, all heads |
+| — | `diagnostics.plot_training_curves` | train/held-out CE and token accuracy |
+| — | `diagnostics.plot_per_joint_metrics` | per-control train/held-out accuracy and MAE |
 | — | `diagnostics.plot_head_comparison` | final metric per head |
 
 All of them share one look. `ch04.style.use_manuscript_style()` sets the
@@ -138,10 +175,85 @@ hazards are handled there:
   only when it is broken; none of the three chapter pipelines use audio.
 - `lrm-ch04` stays at version 0.1.0 while the branch is under development,
   so a reused runtime can keep a stale wheel with the same version number.
-  Setup force-reinstalls just that package, verifies the API it needs
-  imports, and drops cached chapter modules.
+Setup force-reinstalls just that package, verifies the API it needs
+imports, and drops cached chapter modules.
 
-Set `CHAPTER_4_REF` in the first cell to `main` once this branch merges.
+### Full-scale Colab run
+
+1. Open [the Chapter 4 notebook](notebooks/ch04.ipynb) in Colab and choose
+   **Runtime > Change runtime type > GPU**. A fresh runtime is recommended
+   when changing package revisions.
+2. Run the setup and data cells once. In **Choose a run mode**, set
+   `RUN_MODE = 'full'`. The two supported modes are intentionally fixed:
+   `sanity` runs 10 steps per head and prints every loss; `full` runs
+   exactly 20,000 steps per head, logs every 25 steps, validates and
+   refreshes restartable checkpoints every 1,000 steps, and gives every
+   head the same budget.
+3. Run sections 4.5.1 through 4.5.3 in order. Do not reuse one head's
+   backbone for another. The **Training curves, side by side** cell saves
+   `/content/ch04-checkpoints/training_curves.png` and embeds TensorBoard
+   from `/content/ch04-checkpoints/tensorboard`.
+4. Keep the browser tab connected. Colab storage is ephemeral: download
+   `best.pt`, `latest.pt`, the TensorBoard directory, and the static curve
+   before resetting the runtime. Each full-policy checkpoint is roughly
+   1.9 GB because it includes the float32 backbone.
+5. Only interpret the comparison figures from `full` mode. Sanity-mode
+   figures verify shapes and code paths, not convergence.
+
+The joint-mismatch figure reads categorical probability mass directly
+from the logits over held-out frames. It does not estimate a density from
+sample counts. The expert distribution has its own panel, which avoids
+covering either distribution with overlaid points. For the
+autoregressive head, the later cell's logits are teacher-forced on the
+demonstrated preceding bins; this is a conditional diagnostic rather than
+an exhaustive enumeration of all 256-valued prefixes.
+
+## SO-101 chunk playback and episode replay
+
+The Colab's **Export one chunk for a calibrated SO-101** cell writes
+`so101_chunk.npz`. Download it to the computer physically connected to a
+calibrated follower. Previewing is the default and does not connect:
+
+```bash
+ch04-so101-replay so101_chunk.npz \
+  --port /dev/tty.usbmodemXXXX
+```
+
+After checking the six named commands, clearing the workspace, and making
+an emergency stop available, opt into one 16-step playback:
+
+```bash
+ch04-so101-replay so101_chunk.npz \
+  --port /dev/tty.usbmodemXXXX \
+  --robot-id my_follower \
+  --max-relative-target 5 \
+  --execute
+```
+
+The file contains raw dataset command units in the SO-101 feature order,
+plus the training-data min/max. The command refuses malformed or
+out-of-range files, asks for an `EXECUTE` confirmation, uses LeRobot's
+relative-target cap, sends at the dataset's 30 Hz rate, and disconnects in
+a `finally` block. Re-check the workspace and run the same command again
+to replay the chunk.
+
+To replay a known demonstration episode instead of a policy chunk, use
+LeRobot's official dataset replay path:
+
+```bash
+lerobot-replay \
+  --robot.type=so101_follower \
+  --robot.port=/dev/tty.usbmodemXXXX \
+  --robot.id=my_follower \
+  --dataset.repo_id=lerobot/svla_so101_pickplace \
+  --dataset.episode=0
+```
+
+See LeRobot's [real-robot imitation-learning guide](https://huggingface.co/docs/lerobot/en/il_robots)
+and [SO-101 setup/calibration guide](https://huggingface.co/docs/lerobot/en/so101).
+This repository pins LeRobot 0.5.1, where calibrated follower control is
+exposed through `SO101Follower.send_action` and dataset episodes through
+`lerobot-replay`.
 
 ## Data and model contracts
 
@@ -183,8 +295,9 @@ Set `CHAPTER_4_REF` in the first cell to `main` once this branch merges.
 - Tokenizer decoding returns normalized actions. `denormalize_from_stats`
   converts those back to raw dataset units for open-loop comparison.
 
-The open-loop notebook is not a physical-robot deployment recipe. The
-dataset's command units and any simulator or hardware control mode must
-be converted and safety-checked explicitly before execution. Section
-4.7.4's closed-loop rollout is still a manuscript `<TODO>` and has no
-implementation here; the `sim` extra is reserved for it.
+The exported-chunk command is a bounded hardware smoke test, not a
+physical-robot deployment recipe. It executes one already-decoded chunk
+without refreshing camera/state observations. Section 4.7.4's
+closed-loop rollout remains a manuscript `<TODO>`; the `sim` extra is
+reserved for it, and task success still requires repeated closed-loop
+episodes with a stated success criterion.

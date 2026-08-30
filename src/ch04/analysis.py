@@ -23,6 +23,8 @@ from ch04.decoding import (
     sample_action_grids,
 )
 from ch04.diagnostics import (
+    joint_logit_mass,
+    joint_logit_mismatch_rate,
     joint_mismatch_rate,
     nearest_state_neighbors,
     plot_neighbor_softmaxes,
@@ -131,6 +133,76 @@ def neighborhood_softmax_figure(
 
 
 @torch.no_grad()
+def collect_joint_logit_mass(
+    head,
+    backbone,
+    loader: Iterable[Mapping[str, object]],
+    stats,
+    tokenizer,
+    device: torch.device | str,
+    dims: tuple[int, int] = (4, 5),
+    timestep: int = 0,
+    max_batches: int | None = None,
+) -> np.ndarray:
+    """Average a head's two-cell probability mass over held-out frames.
+
+    This uses softmax probabilities directly rather than estimating them
+    with sampled action grids. For autoregressive heads the logits are
+    teacher-forced, so the later cell is conditioned on each frame's
+    demonstrated preceding cells.
+    """
+    total = None
+    examples = 0
+    with evaluation_mode(head), evaluation_mode(backbone):
+        for batch in _batches(loader, max_batches):
+            model_inputs = prepare_batch(batch, stats, device, backbone)
+            bins, pad = action_targets(batch, stats, tokenizer, device)
+            logits = action_head_logits(
+                head, backbone, model_inputs, bins
+            )
+            keep = ~pad[:, timestep, dims[0]] & ~pad[:, timestep, dims[1]]
+            if not bool(keep.any()):
+                continue
+            mass = joint_logit_mass(logits[keep], dims, timestep)
+            count = int(keep.sum())
+            total = mass * count if total is None else total + mass * count
+            examples += count
+    if total is None or examples == 0:
+        raise ValueError("the loader produced no valid joint-logit frames")
+    return total / examples
+
+
+@torch.no_grad()
+def collect_expert_pairs(
+    loader: Iterable[Mapping[str, object]],
+    stats,
+    tokenizer,
+    device: torch.device | str,
+    dims: tuple[int, int] = (4, 5),
+    timestep: int = 0,
+    max_batches: int | None = None,
+) -> np.ndarray:
+    """Collect valid held-out target pairs for the logit comparison."""
+    pairs = []
+    for batch in _batches(loader, max_batches):
+        bins, pad = action_targets(batch, stats, tokenizer, device)
+        if not 0 <= timestep < bins.shape[1]:
+            raise IndexError("timestep is outside the action horizon")
+        first, second = dims
+        controls = bins.shape[2]
+        if not 0 <= first < controls or not 0 <= second < controls:
+            raise IndexError("control is outside the action grid")
+        keep = ~pad[:, timestep, first] & ~pad[:, timestep, second]
+        if bool(keep.any()):
+            pairs.append(
+                bins[keep, timestep][:, [first, second]].cpu().numpy()
+            )
+    if not pairs:
+        raise ValueError("the loader produced no valid expert pairs")
+    return np.concatenate(pairs)
+
+
+@torch.no_grad()
 def joint_mismatch_samples(
     heads: Mapping[str, object],
     backbone,
@@ -201,6 +273,20 @@ def mismatch_rates(
             pairs[:, 0], pairs[:, 1], split_first, split_second
         )
         for name, pairs in samples_by_head.items()
+    }
+
+
+def logit_mismatch_rates(
+    mass_by_head: Mapping[str, np.ndarray],
+    split_first: int,
+    split_second: int,
+) -> dict[str, float]:
+    """Off-diagonal probability per head, computed without sampling."""
+    return {
+        name: joint_logit_mismatch_rate(
+            mass, split_first, split_second
+        )
+        for name, mass in mass_by_head.items()
     }
 
 
