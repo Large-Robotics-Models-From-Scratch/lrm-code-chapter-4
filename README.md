@@ -62,7 +62,11 @@ parallel policy for a configurable step count, and evaluates decoded held-out
 chunks in the dataset's raw action units.
 
 The Colab setup installs the public Chapter 2, 3, and 4 packages directly
-from GitHub. It prints pip's full diagnostic if installation fails.
+from GitHub. It prints pip's full diagnostic if installation fails. LeRobot
+can cause pip to replace Colab's preinstalled Torch while leaving an
+ABI-incompatible optional TorchAudio wheel behind; the setup probes that
+wheel in a child process and removes it only when it is broken. None of the
+three chapter pipelines use audio.
 
 ## Data and model contracts
 

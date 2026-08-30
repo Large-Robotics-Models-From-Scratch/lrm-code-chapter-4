@@ -23,3 +23,17 @@ def test_colab_setup_installs_public_chapter_packages_directly():
     assert "GITHUB_TOKEN" not in setup
     assert "git', 'clone" not in setup
     assert "capture_output=True" in setup
+
+
+def test_colab_setup_removes_only_broken_optional_torchaudio():
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    setup = "".join(notebook["cells"][1]["source"])
+
+    install_index = setup.index("'pip', 'install'")
+    probe_index = setup.index("'import torch, torchaudio'")
+    uninstall_index = setup.index("'pip', 'uninstall'")
+
+    assert install_index < probe_index < uninstall_index
+    assert "if audio_probe.returncode:" in setup
+    assert "'--yes',\n             'torchaudio'" in setup
