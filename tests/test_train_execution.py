@@ -131,6 +131,39 @@ def test_training_updates_backbone_and_saves_full_best_checkpoint(
     torch.testing.assert_close(head.slots, saved_slots)
 
 
+def test_resume_restores_optimizer_scheduler_and_step(
+    fake_backbone, fake_stats, tmp_path
+):
+    """Resuming must continue the run, not restart the optimizer state."""
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = _batch()
+    common = dict(
+        total_steps=4,
+        warmup_steps=0,
+        log_every=1,
+        checkpoint_every=2,
+        checkpoint_dir=tmp_path,
+        validation_loader=[batch],
+    )
+    train_action_head(
+        head, fake_backbone, [batch] * 2, fake_stats, _tokenizer(),
+        "cpu", **common,
+    )
+    checkpoint = torch.load(tmp_path / "latest.pt", weights_only=False)
+    assert checkpoint["step"] == 4
+    assert checkpoint["optimizer"]["state"], "optimizer state is empty"
+    assert checkpoint["scheduler"]["last_epoch"] == 4
+
+    history = train_action_head(
+        head, fake_backbone, [batch] * 2, fake_stats, _tokenizer(),
+        "cpu", resume_from=tmp_path / "latest.pt", **common,
+    )
+    # The run is already complete, so a resume performs no further steps.
+    assert history == []
+
+
 def test_training_continues_after_loader_epoch_boundary(
     fake_backbone, fake_stats
 ):
@@ -151,6 +184,61 @@ def test_training_continues_after_loader_epoch_boundary(
     assert [record["step"] for record in history] == [0.0, 1.0]
     assert history[0]["head_lr"] == pytest.approx(1e-4)
     assert history[0]["backbone_lr"] == pytest.approx(1e-5)
+
+
+def test_held_out_loss_respects_its_batch_bound(
+    fake_backbone, fake_stats
+):
+    """An unbounded validation pass costs one forward per held-out frame."""
+    from ch04 import ParallelDecodeActionHead
+    from ch04.train import held_out_loss
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    loader = [_batch() for _ in range(5)]
+    before = fake_backbone.vision_encoder.calls
+    held_out_loss(
+        head, fake_backbone, loader, fake_stats, _tokenizer(), "cpu",
+        max_batches=2,
+    )
+    assert fake_backbone.vision_encoder.calls - before == 2
+
+    before = fake_backbone.vision_encoder.calls
+    held_out_loss(
+        head, fake_backbone, loader, fake_stats, _tokenizer(), "cpu"
+    )
+    assert fake_backbone.vision_encoder.calls - before == 5
+
+
+def test_upcast_promotes_low_precision_trainable_weights():
+    """bfloat16 rounds a 1e-5 relative AdamW update to nothing."""
+    from ch04.train import upcast_trainable_parameters
+
+    layer = torch.nn.Linear(4, 4).to(torch.bfloat16)
+    before = layer.weight.detach().float().clone()
+    optimizer = torch.optim.AdamW(layer.parameters(), lr=1e-5)
+    layer(torch.randn(2, 4, dtype=torch.bfloat16)).sum().backward()
+    optimizer.step()
+    stuck = (layer.weight.detach().float() == before).float().mean()
+    assert stuck > 0.5, "expected bfloat16 to swallow most of the update"
+
+    layer = torch.nn.Linear(4, 4).to(torch.bfloat16)
+    promoted = upcast_trainable_parameters(layer)
+    assert set(promoted) == {"weight", "bias"}
+    assert layer.weight.dtype == torch.float32
+    before = layer.weight.detach().clone()
+    optimizer = torch.optim.AdamW(layer.parameters(), lr=1e-5)
+    layer(torch.randn(2, 4)).sum().backward()
+    optimizer.step()
+    assert torch.all(layer.weight.detach() != before)
+
+
+def test_upcast_leaves_frozen_parameters_alone():
+    from ch04.train import upcast_trainable_parameters
+
+    layer = torch.nn.Linear(4, 4).to(torch.bfloat16)
+    layer.bias.requires_grad_(False)
+    assert upcast_trainable_parameters(layer) == ["weight"]
+    assert layer.bias.dtype == torch.bfloat16
 
 
 def test_temporal_ensemble_matches_weighted_average():

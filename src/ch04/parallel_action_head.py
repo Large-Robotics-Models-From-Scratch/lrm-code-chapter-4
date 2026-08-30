@@ -13,7 +13,21 @@ from ch04.constants import (
 
 
 class ParallelDecodeActionHead(nn.Module):
-    """Decode one vector-valued action position per future timestep."""
+    """Decode one vector-valued action position per future timestep.
+
+    The manuscript's listing 4.5 prints ``H x D`` slots, but its prose,
+    section 4.8.1, and the chapter summary all specify SmolVLA's
+    granularity: ``H`` positions, one per future timestep, each reading
+    out the complete control vector. This implementation follows the
+    prose and returns ``[B, H, D, bins]``.
+
+    Constructing the head switches the *shared* backbone to eager
+    attention. That is a deliberate side effect: eager is the only
+    attention implementation guaranteed to consume the 4-D additive mask
+    this head builds across the supported ``transformers`` range, and
+    ``flash_attention_2`` would silently ignore it. Pass
+    ``set_eager_attention=False`` if you have verified your own stack.
+    """
 
     def __init__(
         self,
@@ -22,15 +36,20 @@ class ParallelDecodeActionHead(nn.Module):
         horizon: int = ACTION_HORIZON,
         action_dim: int = ACTION_DIM,
         n_bins: int = ACTION_BINS,
+        set_eager_attention: bool = True,
     ) -> None:
         super().__init__()
+        if horizon < 1 or action_dim < 1:
+            raise ValueError("horizon and action_dim must be positive")
+        if not isinstance(n_bins, int) or n_bins < 2:
+            raise ValueError("n_bins must be an integer greater than one")
         self.backbone = backbone
         set_attention = getattr(
             backbone.language_backbone,
             "set_attn_implementation",
             None,
         )
-        if set_attention is not None:
+        if set_eager_attention and set_attention is not None:
             set_attention("eager")
         self.horizon = horizon
         self.action_dim = action_dim

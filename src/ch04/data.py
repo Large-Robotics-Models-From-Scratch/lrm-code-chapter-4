@@ -33,7 +33,8 @@ def make_chunked_dataloader(
     from ch02 import make_pickplace_dataloader
     from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
-    _, stats = make_pickplace_dataloader(dataset_id, batch_size=1)
+    _, raw_stats = make_pickplace_dataloader(dataset_id, batch_size=1)
+    stats = as_tensor_stats(raw_stats)
     metadata = LeRobotDatasetMetadata(dataset_id)
     loader = _make_chunk_loader(
         dataset_id,
@@ -184,9 +185,11 @@ def _compute_stats_from_frame_columns(dataset):
     """Compute training-only Ch2 statistics without decoding images."""
     frame_dataset = getattr(dataset, "hf_dataset", None)
     if frame_dataset is None:
-        from ch02 import compute_stats
+        # ch02's package root exports only the pipeline entry points, so
+        # this helper has to be imported from its defining module.
+        from ch02.pipeline import compute_stats
 
-        return compute_stats(dataset)
+        return as_tensor_stats(compute_stats(dataset))
     result = {}
     for key in ("observation.state", "action"):
         values = _stack_frame_column(frame_dataset, key)
@@ -195,6 +198,35 @@ def _compute_stats_from_frame_columns(dataset):
             "std": values.std(0),
             "min": values.min(0).values,
             "max": values.max(0).values,
+        }
+    return result
+
+
+STATS_KEYS = ("observation.state", "action")
+
+
+def as_tensor_stats(stats: Mapping[str, Mapping[str, object]]):
+    """Coerce any statistics mapping to ``float32`` torch tensors.
+
+    Chapter 2 sources its numbers either from LeRobot's ``meta/stats.json``
+    (NumPy ``float64``, with an extra ``count`` entry) or from its own
+    computation (torch). Chapter 4 normalizes both into one shape so a
+    checkpoint written from either loader restores identically.
+    """
+    result: dict[str, dict[str, torch.Tensor]] = {}
+    for key in STATS_KEYS:
+        if key not in stats:
+            raise KeyError(f"statistics are missing the {key!r} entry")
+        entry = stats[key]
+        for field in ("mean", "std"):
+            if field not in entry:
+                raise KeyError(
+                    f"statistics for {key!r} are missing {field!r}"
+                )
+        result[key] = {
+            name: torch.as_tensor(value).float()
+            for name, value in entry.items()
+            if name in ("mean", "std", "min", "max")
         }
     return result
 

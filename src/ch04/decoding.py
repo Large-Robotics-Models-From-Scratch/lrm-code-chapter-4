@@ -9,6 +9,7 @@ import torch
 
 from ch04.constants import ACTION_DIM, ACTION_HORIZON
 from ch04.data import denormalize_from_stats, prepare_batch
+from ch04.train import action_head_logits
 
 
 @contextmanager
@@ -76,6 +77,135 @@ def select_bins(
 
 
 @torch.no_grad()
+def action_head_bins(
+    head,
+    backbone,
+    model_inputs: tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+    strategy: str = "argmax",
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> torch.Tensor:
+    """Select a discrete grid through the head's real inference path."""
+    with evaluation_mode(backbone), evaluation_mode(head):
+        if hasattr(head, "generate"):
+            if strategy == "argmax":
+                return head.generate(*model_inputs, temperature=0.0)
+            if strategy == "sample":
+                return head.generate(
+                    *model_inputs,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            raise ValueError(f"unknown strategy: {strategy}")
+        logits = action_head_logits(head, backbone, model_inputs)
+    if strategy == "argmax":
+        return logits.argmax(dim=-1)
+    if strategy == "sample":
+        return sample_logits(logits, temperature, top_p)
+    raise ValueError(f"unknown strategy: {strategy}")
+
+
+@torch.no_grad()
+def sample_action_grids(
+    head,
+    backbone,
+    model_inputs: tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+    n_samples: int = 128,
+    example: int = 0,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> torch.Tensor:
+    """Draw complete grids while preserving each head's dependencies.
+
+    Factorized and parallel cells are sampled from their one-pass logits.
+    Autoregressive grids are generated causally, so later draws condition on
+    the bins sampled earlier in the same grid.
+    """
+    if n_samples < 1:
+        raise ValueError("n_samples must be positive")
+    batch_size = model_inputs[0].shape[0]
+    if not 0 <= example < batch_size:
+        raise IndexError("example is outside the batch")
+
+    selected = tuple(
+        value[example : example + 1].expand(
+            n_samples, *value.shape[1:]
+        )
+        for value in model_inputs
+    )
+    if hasattr(head, "generate"):
+        return action_head_bins(
+            head,
+            backbone,
+            selected,
+            strategy="sample",
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    with evaluation_mode(backbone), evaluation_mode(head):
+        logits = action_head_logits(
+            head,
+            backbone,
+            tuple(value[:1] for value in selected),
+        )[0]
+    probabilities = nucleus_probabilities(logits, temperature, top_p)
+    flat = probabilities.reshape(-1, probabilities.shape[-1])
+    draws = torch.multinomial(flat, n_samples, replacement=True).T
+    return draws.reshape(n_samples, *logits.shape[:-1])
+
+
+@torch.no_grad()
+def decode_action_chunk(
+    head,
+    backbone,
+    model_inputs: tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+    tokenizer,
+    stats: Mapping[str, Mapping[str, torch.Tensor]] | None = None,
+    horizon: int | None = None,
+    action_dim: int | None = None,
+    strategy: str = "argmax",
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> torch.Tensor:
+    """Decode any action head to normalized or raw continuous actions."""
+    bins = action_head_bins(
+        head,
+        backbone,
+        model_inputs,
+        strategy,
+        temperature,
+        top_p,
+    )
+    horizon = horizon or getattr(head, "horizon", ACTION_HORIZON)
+    action_dim = action_dim or getattr(head, "action_dim", ACTION_DIM)
+    if bins.ndim != 3 or bins.shape[1:] != (horizon, action_dim):
+        raise ValueError(
+            "head must return logits shaped [B, H, D, bins]"
+        )
+    grid = bins.cpu().numpy()
+    normalized = torch.from_numpy(tokenizer.decode(grid))
+    if stats is None:
+        return normalized
+    return denormalize_from_stats(normalized, stats, "action")
+
+
+@torch.no_grad()
 def decode_parallel_chunk(
     head,
     model_inputs: tuple[
@@ -91,19 +221,18 @@ def decode_parallel_chunk(
     strategy: str = "argmax",
     temperature: float = 1.0,
 ) -> torch.Tensor:
-    """Decode a parallel head to normalized or raw continuous actions."""
-    with evaluation_mode(head):
-        logits = head(*model_inputs)
-    bins = select_bins(logits, strategy, temperature)
-    if bins.ndim != 3 or bins.shape[1:] != (horizon, action_dim):
-        raise ValueError(
-            "head must return logits shaped [B, H, D, bins]"
-        )
-    grid = bins.cpu().numpy()
-    normalized = torch.from_numpy(tokenizer.decode(grid))
-    if stats is None:
-        return normalized
-    return denormalize_from_stats(normalized, stats, "action")
+    """Backward-compatible wrapper for the original parallel-only API."""
+    return decode_action_chunk(
+        head,
+        head.backbone,
+        model_inputs,
+        tokenizer,
+        stats,
+        horizon,
+        action_dim,
+        strategy,
+        temperature,
+    )
 
 
 @torch.no_grad()
@@ -123,8 +252,9 @@ def evaluate_open_loop(
             model_inputs = prepare_batch(
                 batch, stats, device, backbone
             )
-            predicted = decode_parallel_chunk(
+            predicted = decode_action_chunk(
                 head,
+                backbone,
                 model_inputs,
                 tokenizer,
                 stats,

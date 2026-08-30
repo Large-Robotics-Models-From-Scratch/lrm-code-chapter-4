@@ -33,6 +33,35 @@ def backbone_parameters(backbone) -> list[torch.nn.Parameter]:
     ]
 
 
+def upcast_trainable_parameters(
+    module,
+    dtype: torch.dtype = torch.float32,
+) -> list[str]:
+    """Promote trainable low-precision parameters to full precision.
+
+    SmolLM2's checkpoint declares ``bfloat16`` and transformers honours
+    it, so the Chapter 3 trunk arrives in bfloat16. At the manuscript's
+    ``backbone_learning_rate`` of 1e-5 an AdamW update is roughly 1e-5
+    relative, which rounds to zero in bfloat16's eight-bit mantissa: the
+    loss falls, the gradients look healthy, and the pretrained trunk
+    barely moves. Keeping float32 master weights fixes that. Under CUDA
+    autocast the matmuls still run in bfloat16, so the cost is memory,
+    not throughput.
+
+    Returns the names of the parameters that were promoted.
+    """
+    promoted = []
+    for name, parameter in module.named_parameters():
+        if (
+            parameter.requires_grad
+            and parameter.is_floating_point()
+            and parameter.dtype != dtype
+        ):
+            parameter.data = parameter.data.to(dtype)
+            promoted.append(name)
+    return promoted
+
+
 def policy_state_dict(head, backbone) -> dict[str, object]:
     """Serialize the complete policy without duplicating the backbone."""
     head_state = {
@@ -117,9 +146,24 @@ def make_scheduler(
     )
 
 
-def action_head_logits(head, backbone, model_inputs, target_bins):
-    """Run any of the manuscript's three action-head variants."""
+def action_head_logits(
+    head,
+    backbone,
+    model_inputs,
+    target_bins: torch.Tensor | None = None,
+):
+    """Return training logits from any of the three action heads.
+
+    The factorized and parallel heads need only the observation. The
+    autoregressive head additionally consumes the expert grid for causal
+    teacher forcing. Keeping that variation here lets training, validation,
+    and visualization share the rest of their pipeline.
+    """
     if hasattr(head, "teacher_forced_logits"):
+        if target_bins is None:
+            raise ValueError(
+                "target_bins are required for autoregressive logits"
+            )
         return head.teacher_forced_logits(*model_inputs, target_bins)
     if hasattr(head, "backbone"):
         return head(*model_inputs)
@@ -136,8 +180,16 @@ def held_out_loss(
     tokenizer,
     device: torch.device | str,
     label_smoothing: float = 0.05,
+    max_batches: int | None = None,
 ) -> float:
-    """Dataset-level token CE on an episode-disjoint validation loader."""
+    """Dataset-level token CE on an episode-disjoint validation loader.
+
+    ``max_batches`` bounds the evaluation. The SO-101 split holds roughly
+    1,200 held-out frames, so an unbounded pass costs one backbone forward
+    per frame every time a checkpoint is written. Bounding it keeps the
+    validation signal cheap enough to run often; leave it ``None`` for the
+    exact dataset-level number.
+    """
     modules = {
         id(module): module
         for root in (head, backbone)
@@ -149,7 +201,9 @@ def held_out_loss(
     loss_sum = 0.0
     valid_count = 0
     try:
-        for batch in loader:
+        for index, batch in enumerate(loader):
+            if max_batches is not None and index >= max_batches:
+                break
             model_inputs = prepare_batch(
                 batch, stats, device, backbone
             )
@@ -223,6 +277,8 @@ def train_action_head(
     checkpoint_dir: str | Path | None = None,
     validation_loader: Iterable[Mapping[str, object]] | None = None,
     resume_from: str | Path | None = None,
+    upcast_backbone: bool = True,
+    validation_batches: int | None = 32,
 ) -> list[dict[str, float]]:
     """Train a factorized, autoregressive, or parallel action head."""
     if total_steps < 1:
@@ -233,6 +289,14 @@ def train_action_head(
         raise ValueError("grad_clip must be positive")
     backbone.to(device)
     head.to(device)
+    if upcast_backbone:
+        promoted = upcast_trainable_parameters(backbone)
+        promoted += upcast_trainable_parameters(head)
+        if promoted:
+            print(
+                f"promoted {len(promoted)} trainable parameters to "
+                "float32 so low-precision weights receive their updates"
+            )
     head.train()
     backbone.train()
     optimizer = make_optimizer(
@@ -259,6 +323,8 @@ def train_action_head(
         "backbone_learning_rate": backbone_learning_rate,
         "label_smoothing": label_smoothing,
         "grad_clip": grad_clip,
+        "horizon": getattr(head, "horizon", None),
+        "action_dim": getattr(head, "action_dim", None),
     }
     history: list[dict[str, float]] = []
     step = 0
@@ -352,6 +418,7 @@ def train_action_head(
                         tokenizer,
                         device,
                         label_smoothing,
+                        validation_batches,
                     )
                     if validation_loader is not None
                     else None

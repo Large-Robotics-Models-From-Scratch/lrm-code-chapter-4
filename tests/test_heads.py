@@ -124,6 +124,19 @@ def test_ar_generate_uses_cache_and_encodes_vision_once(
     assert [ids.shape for ids in captured] == [(2, 1)] * 3
 
 
+def test_ar_generate_validates_top_p(fake_backbone, model_inputs):
+    import pytest
+
+    head = AutoregressiveActionHead(
+        fake_backbone,
+        d_embed=12,
+        horizon=1,
+        action_dim=1,
+    )
+    with pytest.raises(ValueError, match="top_p"):
+        head.generate(*model_inputs, temperature=1.0, top_p=0.0)
+
+
 def test_ar_uses_separate_action_embedding_table(fake_backbone):
     head = AutoregressiveActionHead(
         fake_backbone, d_embed=12, n_bins=128

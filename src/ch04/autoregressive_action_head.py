@@ -143,11 +143,14 @@ class AutoregressiveActionHead(nn.Module):
         state: torch.Tensor,
         text_attention_mask: torch.Tensor,
         temperature: float = 0.0,
+        top_p: float = 1.0,
     ) -> torch.Tensor:
         """Generate one ``[B, H, D]`` grid using SmolLM2's KV cache."""
         if temperature < 0:
             raise ValueError("temperature must be non-negative")
-        from ch04.decoding import evaluation_mode
+        if not 0 < top_p <= 1:
+            raise ValueError("top_p must lie in (0, 1]")
+        from ch04.decoding import evaluation_mode, nucleus_probabilities
 
         with evaluation_mode(self):
             prefix, attention_mask, prefix_positions = (
@@ -180,7 +183,9 @@ class AutoregressiveActionHead(nn.Module):
                 if temperature == 0.0:
                     next_bin = logits.argmax(dim=-1)
                 else:
-                    probabilities = (logits / temperature).softmax(-1)
+                    probabilities = nucleus_probabilities(
+                        logits, temperature, top_p
+                    )
                     next_bin = torch.multinomial(
                         probabilities, 1
                     ).squeeze(1)

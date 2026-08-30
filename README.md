@@ -30,9 +30,12 @@ src/ch04/
 ├── losses.py                    # grid shaping + masked smoothed CE
 ├── train.py                     # two-LR training + held-out checkpoints
 ├── decoding.py                  # temperature/top-p + open-loop MAE
-├── execution.py                 # chunk schedule + temporal ensemble
-├── diagnostics.py               # section 4.6 plots and mismatch metric
-└── exercises.py                 # multimodal MSE-collapse exercise
+├── execution.py                 # the three section 4.7.2 schedules
+├── diagnostics.py               # figure helpers (pure, array in / fig out)
+├── analysis.py                  # drivers that run a head to make those arrays
+├── exercises.py                 # MSE collapse + the section 4.2.2 mixture
+├── cli.py                       # `ch04-train`
+└── figures.py                   # `ch04-figures`
 notebooks/ch04.ipynb             # complete Colab walkthrough
 ```
 
@@ -42,34 +45,75 @@ Use Python 3.12 or 3.13 and install the sibling chapter packages first:
 
 ```bash
 python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -e "../lrm-code-chapter-2[data]"
-pip install -e ../lrm-code-chapter-3
-pip install -e ".[dev,data]"
+```
+
+```bash
+pip install -e "../lrm-code-chapter-2[data]" && pip install -e ../lrm-code-chapter-3 && pip install -e ".[dev,data]"
 ```
 
 Run the fast suite:
 
 ```bash
 pytest -m "not integration"
-ruff check src tests
 ```
 
-The [Chapter 4 Colab](notebooks/ch04.ipynb) installs all three chapter
-repositories, demonstrates MSE collapse, fits the tokenizer, runs every
-head, constructs episode-disjoint LeRobot action chunks, trains the shipped
-parallel policy for a configurable step count, and evaluates decoded held-out
-chunks in the dataset's raw action units.
+The opt-in suite exercises the live Chapter 2 and Chapter 3 hand-offs and
+trains every head for two real steps:
 
-The Colab setup installs the public Chapter 2, 3, and 4 packages directly
-from GitHub. It prints pip's full diagnostic if installation fails.
+```bash
+pytest -m integration
+```
+
+## Training the action heads
+
+`ch04-train` fits any head, or all three in sequence, each on its own
+freshly initialized Chapter 3 backbone so the comparison is fair:
+
+```bash
+ch04-train --head all --steps 20000 --batch-size 32
+```
+
+```bash
+ch04-train --head parallel --steps 20000 --checkpoint-dir checkpoints
+```
+
+Each run writes `checkpoints/<head>/summary.json` with the configuration,
+wall clock, held-out token cross-entropy, loss history, and open-loop MAE,
+plus `latest.pt`, `best.pt`, and periodic step checkpoints. `--resume-from`
+restores the model, optimizer, scheduler, and step count, and refuses a
+checkpoint whose configuration or tokenizer bounds differ.
+
+## Regenerating the figures
+
+`ch04-figures` reloads a checkpoint — including *its* tokenizer bounds and
+normalization statistics rather than refitting them — and writes every
+figure the chapter attributes to code:
+
+```bash
+ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
+```
+
+| Figure | Helper | What it shows |
+| --- | --- | --- |
+| 4.4 | `diagnostics.plot_bimodal_comparison` | MSE collapse against a two-component mixture |
+| 4.8 | `analysis.neighborhood_softmax_figure` | listing 4.9's held-out softmax cluster |
+| 4.9 | `diagnostics.plot_joint_mismatch_panels` | joint mismatch, one panel per head |
+| §4.6.2 | `diagnostics.plot_temporal_traces` | sampled bins across a chunk, per head |
+| 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
+| 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands |
+
+Section 4.6.1 requires that a reported softmax figure name its
+checkpoint, anchor index, neighbour count, and seed. The caption is
+generated from those arguments, so it cannot drift from the run.
 
 ## Data and model contracts
 
 - Actions are z-score normalized with Chapter 2 statistics before the
-  tokenizer is fit or called.
+  tokenizer is fit or called. `data.as_tensor_stats` coerces both of
+  Chapter 2's statistics formats (LeRobot's NumPy `meta/stats.json` and
+  Chapter 2's own torch computation) into one `float32` structure.
 - The tokenizer clips each dimension to q01/q99, divides it into 256
-  bins, and returns NumPy `int64` bin ids.
+  bins, and returns NumPy `int64` bin ids. It is NumPy-only.
 - SmolLM2 remains at its native 49,152-row vocabulary. The optional AR
   head uses a separate 256-entry action embedding table indexed by bin id.
 - One label is `[H, D] = [16, 6]`. The shipped parallel head keeps this
@@ -86,14 +130,23 @@ from GitHub. It prints pip's full diagnostic if installation fails.
   continuous flow-matching objective.
 - The parallel head extends Chapter 3's observation prefix with `H` learned
   576-wide action positions and contextualizes the suffix with a custom
-  bidirectional action mask.
+  bidirectional action mask. Constructing it switches the shared backbone
+  to eager attention, which is the only implementation guaranteed to accept
+  a 4-D additive mask across the supported `transformers` range.
 - Training keeps SigLIP frozen while updating the Chapter 3 projection,
   state encoder, language backbone, and action head at separate learning
-  rates. Checkpoints include the full policy, normalization statistics,
+  rates. SmolLM2 loads in `bfloat16`, whose eight-bit mantissa rounds a
+  1e-5-scale AdamW update to zero, so `train_action_head` promotes the
+  trainable parameters to `float32` master weights first
+  (`upcast_backbone=False` opts out). Without it roughly 2% of trunk
+  elements move per step instead of all of them.
+- Checkpoints include the full policy, normalization statistics,
   tokenizer bounds, optimizer/scheduler state, and held-out loss.
 - Tokenizer decoding returns normalized actions. `denormalize_from_stats`
   converts those back to raw dataset units for open-loop comparison.
 
 The open-loop notebook is not a physical-robot deployment recipe. The
 dataset's command units and any simulator or hardware control mode must
-be converted and safety-checked explicitly before execution.
+be converted and safety-checked explicitly before execution. Section
+4.7.4's closed-loop rollout is still a manuscript `<TODO>` and has no
+implementation here; the `sim` extra is reserved for it.

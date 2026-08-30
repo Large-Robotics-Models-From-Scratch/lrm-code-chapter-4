@@ -13,8 +13,10 @@ from ch04.data import (
     prepare_batch,
 )
 from ch04.decoding import (
+    decode_action_chunk,
     mean_absolute_error_by_timestep,
     nucleus_probabilities,
+    sample_action_grids,
     select_bins,
 )
 from ch04.losses import expand_timestep_pad_mask, masked_token_cross_entropy
@@ -120,6 +122,56 @@ def test_masked_cross_entropy_and_all_pad_error():
         masked_token_cross_entropy(logits, targets, torch.ones_like(pad))
 
 
+def test_label_smoothing_matches_its_definition():
+    """Check the smoothed loss against the formula, not a uniform stub.
+
+    Uniform logits give ``log(B)`` for every smoothing value, so a test
+    built on them cannot tell 0.05 from 0.9. These logits are deliberately
+    non-uniform, and the expected value is recomputed here from the
+    definition: ``(1 - eps) * -log p[target] + eps/C * sum_i -log p[i]``.
+    """
+    logits = torch.tensor([[[[0.0, 1.0, 2.0, -1.0]]]])
+    targets = torch.tensor([[[1]]])
+    log_probs = logits.log_softmax(-1)[0, 0, 0]
+    for epsilon in (0.0, 0.05, 0.3):
+        expected = (
+            (1 - epsilon) * -log_probs[1]
+            + epsilon / 4 * (-log_probs).sum()
+        )
+        loss = masked_token_cross_entropy(
+            logits, targets, label_smoothing=epsilon
+        )
+        assert float(loss) == pytest.approx(float(expected), rel=1e-6)
+    plain = masked_token_cross_entropy(logits, targets, label_smoothing=0.0)
+    smoothed = masked_token_cross_entropy(
+        logits, targets, label_smoothing=0.05
+    )
+    assert float(smoothed) != pytest.approx(float(plain), rel=1e-9)
+
+
+def test_masked_cross_entropy_excludes_padded_cells_exactly():
+    """The masked loss must equal the mean over valid cells alone."""
+    torch.manual_seed(0)
+    logits = torch.randn(2, 2, 3, 8)
+    targets = torch.randint(0, 8, (2, 2, 3))
+    pad = torch.zeros(2, 2, 3, dtype=torch.bool)
+    pad[0, 1] = True
+    keep = ~pad.reshape(-1)
+    reference = torch.nn.functional.cross_entropy(
+        logits.reshape(-1, 8)[keep],
+        targets.reshape(-1)[keep],
+        label_smoothing=0.05,
+    )
+    loss = masked_token_cross_entropy(logits, targets, pad, 0.05)
+    torch.testing.assert_close(loss, reference)
+    # Corrupting only the padded cells must not move the loss.
+    corrupted = logits.clone()
+    corrupted[0, 1] = 50.0
+    torch.testing.assert_close(
+        masked_token_cross_entropy(corrupted, targets, pad, 0.05), loss
+    )
+
+
 def test_pad_mask_expansion():
     pad = torch.tensor([[False, True]])
     expanded = expand_timestep_pad_mask(pad, 3)
@@ -142,6 +194,45 @@ def test_select_bins_defaults_to_argmax():
     assert select_bins(logits).item() == 1
     with pytest.raises(ValueError, match="unknown strategy"):
         select_bins(logits, strategy="median")
+
+
+def test_generic_decode_supports_factorized_head(
+    fake_backbone, fake_stats, model_inputs
+):
+    from ch04 import ActionTokenizer, FactorizedActionHead
+
+    tokenizer = ActionTokenizer(-np.ones(6), np.ones(6))
+    head = FactorizedActionHead(d_embed=12)
+    decoded = decode_action_chunk(
+        head,
+        fake_backbone,
+        model_inputs,
+        tokenizer,
+        fake_stats,
+    )
+    assert decoded.shape == (2, 16, 6)
+
+
+def test_sample_action_grids_uses_autoregressive_generation(
+    fake_backbone, model_inputs
+):
+    from ch04 import AutoregressiveActionHead
+
+    head = AutoregressiveActionHead(
+        fake_backbone,
+        d_embed=12,
+        horizon=1,
+        action_dim=2,
+    )
+    before = fake_backbone.vision_encoder.calls
+    draws = sample_action_grids(
+        head,
+        fake_backbone,
+        model_inputs,
+        n_samples=3,
+    )
+    assert draws.shape == (3, 1, 2)
+    assert fake_backbone.vision_encoder.calls == before + 1
 
 
 def test_timestep_mae_excludes_padding():

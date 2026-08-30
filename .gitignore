@@ -11,6 +11,8 @@ build/
 *.bin
 *.safetensors
 checkpoints/
+ckpt/
+figures/
 data/cache/
 .coverage
 htmlcov/

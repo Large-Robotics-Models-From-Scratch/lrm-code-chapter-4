@@ -90,3 +90,96 @@ def test_episode_split_is_disjoint():
     assert train_episodes
     assert validation_episodes
     assert train_episodes.isdisjoint(validation_episodes)
+
+
+@pytest.mark.integration
+def test_tokenizer_and_stats_never_see_validation_frames():
+    """Fitting on held-out actions would leak the evaluation split."""
+    from ch04.data import (
+        collect_normalized_actions,
+        make_chunked_dataloaders,
+    )
+
+    train, validation, stats = make_chunked_dataloaders(
+        batch_size=2, validation_fraction=0.2, seed=3
+    )
+    train_episodes = set(train.dataset.episodes)
+    seen = {
+        int(value)
+        for value in train.dataset.hf_dataset["episode_index"]
+    }
+    assert seen == train_episodes
+    held_out = {
+        int(value)
+        for value in validation.dataset.hf_dataset["episode_index"]
+    }
+    assert seen.isdisjoint(held_out)
+
+    actions = collect_normalized_actions(train, stats)
+    assert actions.shape[0] == len(train.dataset.hf_dataset)
+    assert actions.shape[1] == 6
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "head_name", ["factorized", "autoregressive", "parallel"]
+)
+def test_every_head_trains_end_to_end_on_the_real_backbone(head_name):
+    """Each manuscript head must complete real optimizer steps.
+
+    This uses a synthetic batch rather than the LeRobot loader so it
+    checks the head/backbone/optimizer path without a dataset download.
+    """
+    import numpy as np
+    from ch03 import VLABackbone
+
+    from ch04 import ActionTokenizer
+    from ch04.cli import build_action_head
+    from ch04.train import train_action_head
+
+    torch.manual_seed(0)
+    backbone = VLABackbone()
+    head = build_action_head(head_name, backbone)
+    batch = {
+        "observation.images.up": torch.rand(1, 3, 96, 128),
+        "observation.images.side": torch.rand(1, 3, 96, 128),
+        "observation.state": torch.rand(1, 6),
+        "action": torch.rand(1, 16, 6),
+        "action_is_pad": torch.zeros(1, 16, dtype=torch.bool),
+        "task": ["pick up the object"],
+    }
+    stats = {
+        key: {"mean": torch.zeros(6), "std": torch.ones(6)}
+        for key in ("action", "observation.state")
+    }
+    tokenizer = ActionTokenizer(
+        -5 * np.ones(6, dtype=np.float32),
+        5 * np.ones(6, dtype=np.float32),
+    )
+    trunk = backbone.language_backbone.layers[0].mlp.up_proj
+    before = trunk.weight.detach().float().clone()
+
+    history = train_action_head(
+        head,
+        backbone,
+        [batch] * 2,
+        stats,
+        tokenizer,
+        "cpu",
+        total_steps=2,
+        warmup_steps=0,
+        log_every=1,
+        validation_loader=[batch],
+    )
+    assert len(history) == 2
+    assert all(np.isfinite(record["loss"]) for record in history)
+    # log(256) ~ 5.55 at initialization; a broken head diverges instead.
+    assert history[0]["loss"] < 8.0
+
+    after = trunk.weight.detach().float()
+    moved = float((after != before).float().mean())
+    assert moved > 0.9, (
+        "the pretrained trunk barely moved; float32 master weights "
+        f"are not in effect (only {moved:.1%} of elements changed)"
+    )

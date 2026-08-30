@@ -1,5 +1,11 @@
 """Shared fixtures for Chapter 4 unit tests."""
 
+import math
+
+import matplotlib
+
+# Figure tests must never try to open a window on CI.
+matplotlib.use("Agg")
 from types import SimpleNamespace
 
 import numpy as np
@@ -33,16 +39,64 @@ class FakeOutput:
         self.past_key_values = past_key_values
 
 
+class FakeCache:
+    """The minimum key/value cache the AR generation loop relies on."""
+
+    def __init__(self):
+        self.keys = None
+        self.values = None
+
+    def update(self, keys, values):
+        if self.keys is None:
+            self.keys, self.values = keys, values
+        else:
+            self.keys = torch.cat([self.keys, keys], dim=1)
+            self.values = torch.cat([self.values, values], dim=1)
+        return self.keys, self.values
+
+
 class FakeLanguageBackbone(nn.Module):
+    """A one-head attention stub that honours the mask and positions.
+
+    A stub that ignores ``attention_mask`` makes every masking test
+    vacuous: padded keys and a bidirectional action block would be
+    indistinguishable from a position-wise linear. This stub therefore
+    runs real scaled dot-product attention, applies either a 2-D key
+    validity mask or a 4-D additive mask, adds a position embedding, and
+    supports incremental decoding so one cached step is numerically
+    equal to recomputing the whole prefix.
+    """
+
     def __init__(self, width=12):
         super().__init__()
+        self.width = width
         self.projection = nn.Linear(width, width)
         self.embedding = nn.Embedding(512, width)
+        self.positions = nn.Embedding(512, width)
+        self.query = nn.Linear(width, width, bias=False)
+        self.key = nn.Linear(width, width, bias=False)
+        self.value = nn.Linear(width, width, bias=False)
         self.last_attention_mask = None
         self.last_position_ids = None
 
     def get_input_embeddings(self):
         return self.embedding
+
+    def _additive_mask(
+        self, attention_mask, n_query, n_key, dtype, device
+    ):
+        if attention_mask is None:
+            return torch.zeros(1, n_query, n_key, device=device).to(dtype)
+        if attention_mask.dim() == 4:
+            return attention_mask[:, 0, -n_query:, :].to(dtype)
+        valid = attention_mask.bool()[:, None, :]
+        bias = torch.zeros(valid.shape[0], n_query, n_key, device=device)
+        bias = bias.masked_fill(~valid, -torch.inf)
+        future = torch.triu(
+            torch.ones(n_query, n_key, dtype=torch.bool, device=device),
+            diagonal=1 + n_key - n_query,
+        )
+        return bias.masked_fill(future[None], -torch.inf).to(dtype)
 
     def forward(
         self,
@@ -55,8 +109,28 @@ class FakeLanguageBackbone(nn.Module):
     ):
         self.last_attention_mask = attention_mask
         self.last_position_ids = position_ids
-        cache = object() if use_cache else past_key_values
-        return FakeOutput(self.projection(inputs_embeds), cache)
+        hidden = self.projection(inputs_embeds)
+        if position_ids is not None:
+            hidden = hidden + self.positions(position_ids)
+        queries = self.query(hidden)
+        keys, values = self.key(hidden), self.value(hidden)
+
+        cache = past_key_values
+        if use_cache or cache is not None:
+            if cache is None:
+                cache = FakeCache()
+            keys, values = cache.update(keys, values)
+        scores = queries @ keys.transpose(-1, -2)
+        scores = scores / math.sqrt(self.width)
+        scores = scores + self._additive_mask(
+            attention_mask,
+            queries.shape[1],
+            keys.shape[1],
+            scores.dtype,
+            scores.device,
+        )
+        attended = scores.softmax(dim=-1) @ values
+        return FakeOutput(hidden + attended, cache if use_cache else None)
 
 
 class FakeVisionEncoder(nn.Module):
@@ -155,6 +229,26 @@ class FakeBackbone(nn.Module):
 @pytest.fixture
 def fake_backbone():
     return FakeBackbone()
+
+
+@pytest.fixture
+def chunk_batch():
+    """One LeRobot-shaped batch with a two-camera observation."""
+
+    def build(batch_size=2, horizon=16, action_dim=6):
+        torch.manual_seed(0)
+        return {
+            "observation.images.up": torch.rand(batch_size, 3, 20, 30),
+            "observation.images.side": torch.rand(batch_size, 3, 20, 30),
+            "observation.state": torch.rand(batch_size, 6),
+            "action": torch.rand(batch_size, horizon, action_dim),
+            "action_is_pad": torch.zeros(
+                batch_size, horizon, dtype=torch.bool
+            ),
+            "task": ["pick up the object"] * batch_size,
+        }
+
+    return build
 
 
 @pytest.fixture

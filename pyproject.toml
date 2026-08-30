@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 # Dataset stack: targets the lerobot 0.5.1 API for SO-101 datasets.
 data = [
+    "lrm-ch02",
     "lerobot==0.5.1",
     "huggingface-hub>=1.0,<2.0",
 ]
@@ -45,6 +46,10 @@ dev = [
     "nbstripout",
     "pre-commit",
 ]
+
+[project.scripts]
+ch04-train = "ch04.cli:main"
+ch04-figures = "ch04.figures:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
