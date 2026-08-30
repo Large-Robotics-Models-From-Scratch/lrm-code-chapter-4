@@ -278,9 +278,17 @@ def train_action_head(
     validation_loader: Iterable[Mapping[str, object]] | None = None,
     resume_from: str | Path | None = None,
     upcast_backbone: bool = True,
+    snapshot_steps: tuple[int, ...] = (),
     validation_batches: int | None = 32,
 ) -> list[dict[str, float]]:
-    """Train a factorized, autoregressive, or parallel action head."""
+    """Train a factorized, autoregressive, or parallel action head.
+
+    ``latest.pt`` is rewritten every ``checkpoint_every`` steps and
+    ``best.pt`` whenever the held-out loss improves. ``snapshot_steps``
+    additionally keeps a permanent copy at the given steps; it is empty by
+    default because a policy checkpoint carries the whole float32 backbone
+    and runs to roughly a gigabyte.
+    """
     if total_steps < 1:
         raise ValueError("total_steps must be positive")
     if log_every < 1:
@@ -438,7 +446,7 @@ def train_action_head(
                 if validation is not None and validation < best_validation:
                     best_validation = validation
                     torch.save(payload, checkpoint_path / "best.pt")
-                if completed_step in {5_000, total_steps}:
+                if completed_step in snapshot_steps:
                     torch.save(
                         payload,
                         checkpoint_path / f"step{completed_step:06d}.pt",

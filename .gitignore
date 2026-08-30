@@ -12,6 +12,7 @@ build/
 *.safetensors
 checkpoints/
 ckpt/
+ch04-checkpoints/
 figures/
 data/cache/
 .coverage

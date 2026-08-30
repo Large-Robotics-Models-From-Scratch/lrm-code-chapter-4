@@ -137,6 +137,7 @@ def _train_one_head(
             validation_loader=validation_loader,
             resume_from=arguments.resume_from,
             validation_batches=arguments.validation_batches,
+            snapshot_steps=tuple(arguments.snapshot_steps),
         )
     except KeyboardInterrupt:
         interrupted = True
@@ -250,6 +251,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint-every", type=int, default=1_000)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument(
+        "--snapshot-steps",
+        type=int,
+        nargs="*",
+        default=(),
+        help=(
+            "steps to keep permanently, on top of latest.pt and best.pt; "
+            "each snapshot is roughly a gigabyte"
+        ),
+    )
     parser.add_argument("--resume-from", default=None)
     parser.add_argument(
         "--open-loop-batches",

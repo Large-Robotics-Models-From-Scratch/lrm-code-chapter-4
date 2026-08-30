@@ -79,9 +79,11 @@ ch04-train --head parallel --steps 20000 --checkpoint-dir checkpoints
 
 Each run writes `checkpoints/<head>/summary.json` with the configuration,
 wall clock, held-out token cross-entropy, loss history, and open-loop MAE,
-plus `latest.pt`, `best.pt`, and periodic step checkpoints. `--resume-from`
-restores the model, optimizer, scheduler, and step count, and refuses a
-checkpoint whose configuration or tokenizer bounds differ.
+plus `latest.pt` and `best.pt`. A checkpoint carries the whole float32
+backbone and runs to roughly 1.9 GB, so permanent snapshots are opt-in via
+`--snapshot-steps 5000 20000`. `--resume-from` restores the model,
+optimizer, scheduler, and step count, and refuses a checkpoint whose
+configuration or tokenizer bounds differ.
 
 ## Regenerating the figures
 
@@ -139,7 +141,8 @@ generated from those arguments, so it cannot drift from the run.
   1e-5-scale AdamW update to zero, so `train_action_head` promotes the
   trainable parameters to `float32` master weights first
   (`upcast_backbone=False` opts out). Without it roughly 2% of trunk
-  elements move per step instead of all of them.
+  elements move per step instead of all of them; with it a checkpoint is
+  about 1.9 GB rather than 1 GB.
 - Checkpoints include the full policy, normalization statistics,
   tokenizer bounds, optimizer/scheduler state, and held-out loss.
 - Tokenizer decoding returns normalized actions. `denormalize_from_stats`

@@ -96,6 +96,7 @@ def test_training_updates_backbone_and_saves_full_best_checkpoint(
         checkpoint_every=1,
         checkpoint_dir=tmp_path,
         validation_loader=[batch],
+        snapshot_steps=(1,),
     )
     assert head.training
     assert not torch.equal(
@@ -162,6 +163,23 @@ def test_resume_restores_optimizer_scheduler_and_step(
     )
     # The run is already complete, so a resume performs no further steps.
     assert history == []
+
+
+def test_snapshots_are_off_by_default(
+    fake_backbone, fake_stats, tmp_path
+):
+    """A policy snapshot is ~1 GB, so keep only latest.pt and best.pt."""
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = _batch()
+    train_action_head(
+        head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+        total_steps=1, warmup_steps=0, log_every=1, checkpoint_every=1,
+        checkpoint_dir=tmp_path, validation_loader=[batch],
+    )
+    written = sorted(path.name for path in tmp_path.glob("*.pt"))
+    assert written == ["best.pt", "latest.pt"]
 
 
 def test_training_continues_after_loader_epoch_boundary(
