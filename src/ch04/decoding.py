@@ -196,7 +196,7 @@ def decode_action_chunk(
     action_dim = action_dim or getattr(head, "action_dim", ACTION_DIM)
     if bins.ndim != 3 or bins.shape[1:] != (horizon, action_dim):
         raise ValueError(
-            "head must return logits shaped [B, H, D, bins]"
+            "head must produce bin ids shaped [B, H, D]"
         )
     grid = bins.cpu().numpy()
     normalized = torch.from_numpy(tokenizer.decode(grid))

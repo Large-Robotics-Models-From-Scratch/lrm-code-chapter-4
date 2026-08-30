@@ -52,6 +52,12 @@ def test_colab_trains_all_three_heads():
     assert "def make_policy" in code
     assert "VLABackbone().to(device)" in code
     assert "ch04-train --head all" in _notebook_text()
+    # The heads must run in manuscript order: one-shot, AR, then parallel.
+    calls = [
+        code.index(f"results['{name}'] = run_head_experiment(")
+        for name in ("factorized", "autoregressive", "parallel")
+    ]
+    assert calls == sorted(calls)
 
 
 def test_colab_defines_every_name_it_uses():
@@ -109,3 +115,49 @@ def test_colab_records_the_provenance_section_461_requires():
     code = _notebook_code()
     for token in ("ANCHOR_INDEX", "N_NEIGHBORS", "SEED", "set_seed"):
         assert token in code
+
+def test_colab_setup_removes_only_broken_optional_torchaudio():
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    setup = "".join(notebook["cells"][1]["source"])
+
+    # Order matters: install first, then probe, then remove.
+    assert (
+        setup.index("'pip', 'install'")
+        < setup.index("'import torch, torchaudio'")
+        < setup.index("'pip', 'uninstall'")
+    )
+    # The probe must run out-of-process, or a failed import taints the
+    # kernel that is about to load SigLIP.
+    assert "subprocess.run(" in setup
+    assert "audio_probe.returncode" in setup
+    # Remove only a wheel that is both present and broken.
+    assert "importlib.util.find_spec('torchaudio')" in setup
+    assert "if audio_installed and audio_probe.returncode:" in setup
+    assert "'uninstall', '--yes'" in setup
+    assert "'torchaudio'" in setup
+
+
+def test_colab_setup_verifies_the_import_that_was_failing():
+    """The probe must cover `from ch03 import VLABackbone` itself."""
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    setup = "".join(notebook["cells"][1]["source"])
+
+    # Match the probe command, not the comment that explains it.
+    probe = "'from ch03 import VLABackbone; '"
+    assert probe in setup
+    assert setup.index("'pip', 'uninstall'") < setup.index(probe)
+
+
+def test_colab_force_refreshes_and_verifies_branch_api():
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    setup = "".join(notebook["cells"][1]["source"])
+
+    assert "--force-reinstall" in setup
+    assert "--no-deps" in setup
+    assert "chapter4_requirement" in setup
+    assert "from ch04.decoding import decode_action_chunk" in setup
+    assert "sample_action_grids" in setup
+    assert "sys.modules.pop(name, None)" in setup

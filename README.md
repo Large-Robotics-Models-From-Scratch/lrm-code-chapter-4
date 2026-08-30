@@ -108,6 +108,32 @@ Section 4.6.1 requires that a reported softmax figure name its
 checkpoint, anchor index, neighbour count, and seed. The caption is
 generated from those arguments, so it cannot drift from the run.
 
+## The Colab
+
+The [Chapter 4 Colab](notebooks/ch04.ipynb) installs all three chapter
+repositories, demonstrates MSE collapse against a fitted mixture, fits the
+tokenizer, and constructs episode-disjoint LeRobot action chunks. A shared
+experiment runner then trains, visualizes, samples, and evaluates the
+factorized, autoregressive, and parallel heads in order, each from its own
+fresh Chapter 3 backbone, before producing the section 4.6 and 4.7 figures.
+
+Setup installs the public Chapter 2, 3, and 4 packages directly from
+GitHub and prints pip's full diagnostic on failure. Two Colab-specific
+hazards are handled there:
+
+- LeRobot can make pip replace Colab's preinstalled Torch while leaving an
+  ABI-incompatible optional TorchAudio wheel behind. Transformers detects
+  TorchAudio by package presence and imports that binary on the way to
+  SigLIP, so `from ch03 import VLABackbone` fails with an undefined-symbol
+  `OSError`. The setup probes the wheel in a child process and removes it
+  only when it is broken; none of the three chapter pipelines use audio.
+- `lrm-ch04` stays at version 0.1.0 while the branch is under development,
+  so a reused runtime can keep a stale wheel with the same version number.
+  Setup force-reinstalls just that package, verifies the API it needs
+  imports, and drops cached chapter modules.
+
+Set `CHAPTER_4_REF` in the first cell to `main` once this branch merges.
+
 ## Data and model contracts
 
 - Actions are z-score normalized with Chapter 2 statistics before the
