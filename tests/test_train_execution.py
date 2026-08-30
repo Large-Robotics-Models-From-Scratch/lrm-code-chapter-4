@@ -306,6 +306,63 @@ def test_autoregressive_logits_require_teacher_forcing_targets(
         action_head_logits(head, fake_backbone, model_inputs)
 
 
+def test_history_carries_the_held_out_curve(fake_backbone, fake_stats):
+    """A training curve is only readable next to a held-out curve."""
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = _batch()
+    history = train_action_head(
+        head, fake_backbone, [batch] * 2, fake_stats, _tokenizer(),
+        "cpu", total_steps=4, warmup_steps=0, log_every=1,
+        validation_loader=[batch], validate_every=2,
+    )
+    assert [record["step"] for record in history] == [0.0, 1.0, 2.0, 3.0]
+    measured = [
+        record["step"] for record in history
+        if not math.isnan(record["validation_loss"])
+    ]
+    # Validation runs after steps 2 and 4, annotating those records only,
+    # so matplotlib skips the rest as NaN instead of drawing a staircase.
+    assert measured == [1.0, 3.0]
+    assert all(
+        record["validation_loss"] > 0
+        for record in history
+        if not math.isnan(record["validation_loss"])
+    )
+    assert math.isnan(history[0]["validation_loss"])
+
+
+def test_training_resumes_train_mode_after_validating(
+    fake_backbone, fake_stats
+):
+    """A validation pass must not leave the policy in eval mode."""
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = _batch()
+    train_action_head(
+        head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+        total_steps=1, warmup_steps=0, log_every=1,
+        validation_loader=[batch], validate_every=1,
+    )
+    assert head.training
+    assert fake_backbone.training
+
+
+def test_validation_is_skipped_without_a_loader(
+    fake_backbone, fake_stats
+):
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    history = train_action_head(
+        head, fake_backbone, [_batch()], fake_stats, _tokenizer(),
+        "cpu", total_steps=1, warmup_steps=0, log_every=1,
+    )
+    assert math.isnan(history[0]["validation_loss"])
+
+
 def test_temporal_ensemble_matches_weighted_average():
     ensemble = TemporalEnsembler(decay=math.log(2))
     first = torch.tensor([[0.0], [2.0]])

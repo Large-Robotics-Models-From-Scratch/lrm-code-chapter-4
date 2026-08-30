@@ -103,6 +103,15 @@ ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
 | §4.6.2 | `diagnostics.plot_temporal_traces` | sampled bins across a chunk, per head |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
 | 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands |
+| — | `diagnostics.plot_training_curves` | train and held-out CE, all heads |
+| — | `diagnostics.plot_head_comparison` | final metric per head |
+
+All of them share one look. `ch04.style.use_manuscript_style()` sets the
+matplotlib defaults, and `ch04.style.HEAD_STYLES` reserves a colour, dash
+pattern, and marker per action head so a reader can carry one head's
+identity across every figure — and so the three stay separable in
+grayscale print. The Colab calls it once in its setup cell; `ch04-figures`
+calls it for you.
 
 Section 4.6.1 requires that a reported softmax figure name its
 checkpoint, anchor index, neighbour count, and seed. The caption is

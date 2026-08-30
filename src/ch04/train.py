@@ -279,6 +279,7 @@ def train_action_head(
     resume_from: str | Path | None = None,
     upcast_backbone: bool = True,
     snapshot_steps: tuple[int, ...] = (),
+    validate_every: int | None = None,
     validation_batches: int | None = 32,
 ) -> list[dict[str, float]]:
     """Train a factorized, autoregressive, or parallel action head.
@@ -288,6 +289,13 @@ def train_action_head(
     additionally keeps a permanent copy at the given steps; it is empty by
     default because a policy checkpoint carries the whole float32 backbone
     and runs to roughly a gigabyte.
+
+    Every history record carries ``validation_loss``: the held-out token
+    cross-entropy measured just after that record's optimizer step, or NaN
+    on steps where no validation ran. Matplotlib skips NaN, so plotting the
+    column directly gives the measured points and nothing else. Validation
+    runs every ``validate_every`` steps, defaulting to ``checkpoint_every``,
+    and always once at the final step.
     """
     if total_steps < 1:
         raise ValueError("total_steps must be positive")
@@ -337,6 +345,10 @@ def train_action_head(
     history: list[dict[str, float]] = []
     step = 0
     best_validation = float("inf")
+    if validate_every is None:
+        validate_every = checkpoint_every
+    if validate_every < 0:
+        raise ValueError("validate_every must be non-negative")
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device)
         if checkpoint.get("config") != config:
@@ -394,7 +406,8 @@ def train_action_head(
             optimizer.step()
             scheduler.step()
 
-            if step % log_every == 0:
+            log_now = step % log_every == 0
+            if log_now:
                 log_probs = logits.float().log_softmax(-1)
                 token_entropy = -(log_probs.exp() * log_probs).sum(-1)
                 record = {
@@ -403,12 +416,9 @@ def train_action_head(
                     "entropy": float(token_entropy[~pad].mean().detach()),
                     "head_lr": step_head_lr,
                     "backbone_lr": step_backbone_lr,
+                    "validation_loss": float("nan"),
                 }
                 history.append(record)
-                print(
-                    f"[{step:6d}] loss={record['loss']:.3f} "
-                    f"ent={record['entropy']:.2f}"
-                )
 
             completed_step = step + 1
             should_checkpoint = (
@@ -416,21 +426,39 @@ def train_action_head(
                 and checkpoint_every > 0
                 and completed_step % checkpoint_every == 0
             )
-            if should_checkpoint:
-                validation = (
-                    held_out_loss(
-                        head,
-                        backbone,
-                        validation_loader,
-                        stats,
-                        tokenizer,
-                        device,
-                        label_smoothing,
-                        validation_batches,
-                    )
-                    if validation_loader is not None
-                    else None
+            should_validate = validation_loader is not None and (
+                should_checkpoint
+                or completed_step == total_steps
+                or (
+                    validate_every > 0
+                    and completed_step % validate_every == 0
                 )
+            )
+            validation = None
+            if should_validate:
+                validation = held_out_loss(
+                    head,
+                    backbone,
+                    validation_loader,
+                    stats,
+                    tokenizer,
+                    device,
+                    label_smoothing,
+                    validation_batches,
+                )
+                if history:
+                    history[-1]["validation_loss"] = validation
+                head.train()
+                backbone.train()
+            if log_now:
+                message = (
+                    f"[{step:6d}] loss={history[-1]['loss']:.3f} "
+                    f"ent={history[-1]['entropy']:.2f}"
+                )
+                if validation is not None:
+                    message += f" val={validation:.3f}"
+                print(message)
+            if should_checkpoint:
                 payload = _checkpoint_payload(
                     step=completed_step,
                     head=head,

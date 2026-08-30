@@ -283,12 +283,12 @@ def test_plot_action_diagnostics_generates_section_46_figures():
         n_samples=20,
     )
 
-    assert marginal.axes[0].get_xlabel() == "bin id"
+    assert "action bin" in marginal.axes[0].get_xlabel()
     assert joint.axes[0].get_xlabel() == "first control bin"
-    assert joint.axes[0].get_legend_handles_labels()[1] == [
-        "expert support",
-        "supported samples",
-        "unsupported samples",
-    ]
+    labels = joint.axes[0].get_legend_handles_labels()[1]
+    assert labels[0] == "expert support"
+    # The counts make an all-unsupported panel obvious at a glance.
+    assert labels[1].startswith("supported (")
+    assert labels[2].startswith("unsupported (")
     plt.close(marginal)
     plt.close(joint)

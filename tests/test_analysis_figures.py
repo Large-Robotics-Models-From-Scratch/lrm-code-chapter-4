@@ -26,10 +26,12 @@ from ch04.diagnostics import (
     nearest_state_neighbors,
     plot_bimodal_comparison,
     plot_execution_schedules,
+    plot_head_comparison,
     plot_joint_mismatch_panels,
     plot_neighbor_softmaxes,
     plot_open_loop_episode,
     plot_temporal_traces,
+    plot_training_curves,
 )
 from ch04.execution import execution_schedules
 
@@ -67,8 +69,10 @@ def test_neighbor_softmax_figure_has_targets_and_curves():
         probabilities, targets, n_curves=3, caption="ckpt=x seed=0"
     )
     upper, lower = figure.axes
-    assert upper.get_title() == "ckpt=x seed=0"
-    assert lower.get_xlabel() == "bin id"
+    assert "Held-out action distribution" in upper.get_title()
+    assert "action bin" in lower.get_xlabel()
+    # Provenance moves to a figure footnote so it cannot stretch the axes.
+    assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
     # Three individual curves plus the cluster mean.
     assert len(lower.lines) == 4
     plt.close(figure)
@@ -85,7 +89,7 @@ def test_bimodal_comparison_overlays_the_mixture_density():
         actions.numpy(), 0.0, mixture=mixture
     )
     labels = figure.axes[0].get_legend_handles_labels()[1]
-    assert "Gaussian mixture" in labels
+    assert any("Gaussian mixture" in label for label in labels)
     plt.close(figure)
 
 
@@ -97,7 +101,8 @@ def test_joint_mismatch_panels_render_one_axis_per_head():
     expert = np.array([[10, 10], [240, 240]])
     figure = plot_joint_mismatch_panels(samples, expert)
     titles = [axis.get_title() for axis in figure.axes[:2]]
-    assert titles == ["factorized", "parallel"]
+    assert titles[0].startswith("factorized")
+    assert titles[1].startswith("parallel")
     plt.close(figure)
     with pytest.raises(ValueError, match="shape"):
         plot_joint_mismatch_panels({"bad": np.zeros((4, 3))}, expert)
@@ -107,7 +112,7 @@ def test_temporal_and_schedule_and_episode_figures():
     rng = np.random.default_rng(0)
     grids = {"parallel": rng.integers(0, 256, (4, 5, 6))}
     figure = plot_temporal_traces(grids, control=2)
-    assert figure.axes[0].get_ylabel() == "sampled bin (control 2)"
+    assert figure.axes[0].get_ylabel() == "sampled bin, control 2"
     plt.close(figure)
 
     chunks = [torch.arange(6.0).reshape(3, 2) + t for t in range(4)]
@@ -122,12 +127,73 @@ def test_temporal_and_schedule_and_episode_figures():
         valid=np.array([True, True, False, True, True]),
     )
     assert len(figure.axes) == 2
-    assert figure.axes[-1].get_xlabel() == "episode timestep"
+    assert figure.axes[-1].get_xlabel().startswith("episode timestep")
     plt.close(figure)
     with pytest.raises(ValueError, match="no valid timesteps"):
         plot_open_loop_episode(
             np.zeros((2, 1)), np.zeros((2, 1)), valid=np.zeros(2, bool)
         )
+
+
+def test_training_curves_plot_train_and_sparse_held_out_points():
+    history = [
+        {"step": float(i), "loss": 5.5 - 0.1 * i, "entropy": 5.5,
+         "validation_loss": 5.4 - 0.1 * i if i % 2 else float("nan")}
+        for i in range(6)
+    ]
+    figure = plot_training_curves({"parallel": history})
+    loss_axis, entropy_axis = figure.axes
+    assert loss_axis.get_ylabel() == "nats / token"
+    assert entropy_axis.get_xlabel() == "training step"
+    labels = loss_axis.get_legend_handles_labels()[1]
+    assert any("train" in label for label in labels)
+    assert any("held out" in label for label in labels)
+    assert any("uniform" in label for label in labels)
+    # Held-out markers are drawn only where a measurement exists.
+    held_out = [
+        line for line in loss_axis.lines
+        if line.get_linestyle() == "None"
+    ]
+    assert held_out and len(held_out[0].get_xdata()) == 3
+    plt.close(figure)
+
+    with pytest.raises(ValueError, match="at least one"):
+        plot_training_curves({})
+    with pytest.raises(ValueError, match="empty history"):
+        plot_training_curves({"parallel": []})
+
+
+def test_training_curves_handle_a_run_without_validation():
+    history = [
+        {"step": 0.0, "loss": 5.5, "entropy": 5.5,
+         "validation_loss": float("nan")}
+    ]
+    figure = plot_training_curves({"factorized": history})
+    labels = figure.axes[0].get_legend_handles_labels()[1]
+    assert not any("held out" in label for label in labels)
+    plt.close(figure)
+
+
+def test_head_comparison_bars_are_labelled_and_coloured():
+    from ch04.style import head_color
+
+    summary = {
+        name: {"validation_ce": 5.0 + i, "mae_std": 1.0 + i,
+               "jitter": 10.0 + i}
+        for i, name in enumerate(HEAD_NAMES)
+    }
+    figure = plot_head_comparison(summary)
+    assert len(figure.axes) == 3
+    first = figure.axes[0]
+    assert "Held-out CE" in first.get_title()
+    colours = [patch.get_facecolor() for patch in first.patches]
+    assert len(colours) == 3
+    import matplotlib.colors as mcolors
+    assert colours[0][:3] == mcolors.to_rgb(head_color("factorized"))
+    plt.close(figure)
+
+    with pytest.raises(KeyError, match="validation_ce"):
+        plot_head_comparison({"parallel": {"mae_std": 1.0}})
 
 
 # --- analysis: model-driven drivers ---------------------------------------
@@ -193,9 +259,9 @@ def test_neighborhood_figure_caption_records_the_provenance():
         collected, anchor_index=3, n_neighbors=5, checkpoint="best.pt",
         seed=11,
     )
-    title = figure.axes[0].get_title()
+    footnote = " ".join(text.get_text() for text in figure.texts)
     for token in ("best.pt", "anchor=3", "neighbors=5", "seed=11"):
-        assert token in title
+        assert token in footnote, token
     plt.close(figure)
 
 

@@ -110,6 +110,10 @@ def generate_all(
 
     matplotlib.use("Agg")
 
+    from ch04.style import use_manuscript_style
+
+    use_manuscript_style()
+
     from ch04.analysis import (
         collect_cell_softmaxes,
         decoded_chunk_stream,
@@ -216,7 +220,10 @@ def generate_all(
     written["figure_4_9"] = str(
         _save(
             plot_joint_mismatch_panels(
-                pairs, expert_pairs, bin_range=(0, tokenizer.n_bins)
+                pairs,
+                expert_pairs,
+                bin_range=(0, tokenizer.n_bins),
+                dim_labels=(str(dims[0]), str(dims[1])),
             ),
             output / "figure_4_9_joint_mismatch.png",
         )
