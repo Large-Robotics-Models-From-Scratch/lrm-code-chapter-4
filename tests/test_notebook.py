@@ -224,6 +224,19 @@ def test_colab_has_fixed_sanity_and_full_training_modes():
     assert "export_action_chunk" in code
 
 
+def test_colab_defines_metrics_directly_without_literature_rationale():
+    text = _notebook_text()
+    assert "**Action-token accuracy** is exact argmax-bin accuracy" in text
+    for phrase in (
+        "Following OpenVLA",
+        "SmolVLA-style",
+        "Listing 4.",
+        "manuscript TODO",
+        "the latency argument the chapter makes",
+    ):
+        assert phrase not in text
+
+
 def test_full_colab_mirrors_and_resumes_checkpoints_from_google_drive():
     code = _notebook_code()
     text = _notebook_text()

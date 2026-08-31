@@ -29,7 +29,7 @@ HEAD_STYLES: dict[str, dict[str, object]] = {
         "color": "#55A868",
         "linestyle": "-",
         "marker": "^",
-        "label": "parallel (shipped)",
+        "label": "parallel (bidirectional)",
     },
 }
 
