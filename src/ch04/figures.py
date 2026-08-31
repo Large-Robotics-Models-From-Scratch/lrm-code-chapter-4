@@ -275,7 +275,10 @@ def generate_all(
     written["figure_4_11"] = str(
         _save(
             plot_open_loop_episode(
-                trace["predicted"], trace["expert"], trace["valid"]
+                trace["predicted"],
+                trace["expert"],
+                trace["valid"],
+                head_name=head_name,
             ),
             output / "figure_4_11_open_loop_episode.png",
         )

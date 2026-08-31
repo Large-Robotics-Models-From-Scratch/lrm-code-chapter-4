@@ -149,9 +149,14 @@ def test_temporal_and_schedule_and_episode_figures():
         np.zeros((5, 2)),
         np.ones((5, 2)),
         valid=np.array([True, True, False, True, True]),
+        head_name="factorized",
     )
     assert len(figure.axes) == 2
     assert figure.axes[-1].get_xlabel().startswith("episode timestep")
+    assert figure.axes[0].get_title().startswith("factorized")
+    assert "factorized (one-shot)" in (
+        figure.axes[0].get_legend_handles_labels()[1]
+    )
     plt.close(figure)
     with pytest.raises(ValueError, match="no valid timesteps"):
         plot_open_loop_episode(

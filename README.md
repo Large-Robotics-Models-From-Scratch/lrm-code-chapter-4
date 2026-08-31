@@ -145,7 +145,7 @@ ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
 | 4.9 | `diagnostics.plot_joint_logit_panels` | expert and direct logit-implied pair mass, separate panels |
 | §4.6.2 | `diagnostics.plot_temporal_traces` | sampled bins across a chunk, per head |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
-| 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands |
+| 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands, one six-control figure per trained head |
 | — | `diagnostics.plot_training_curves` | train/held-out CE and token accuracy |
 | — | `diagnostics.plot_per_joint_metrics` | per-control train/held-out accuracy and MAE |
 | — | `diagnostics.plot_head_comparison` | final metric per head |
@@ -227,6 +227,14 @@ covering either distribution with overlaid points. For the
 autoregressive head, the later cell's logits are teacher-forced on the
 demonstrated preceding bins; this is a conditional diagnostic rather than
 an exhaustive enumeration of all 256-valued prefixes.
+
+Figure 4.11 is generated only after all three heads have trained. It writes
+one six-control plot per variant, using the same ordered held-out frames in
+each figure so the expert/policy separation can be compared without laying
+three policies over one another. The notebook also prints each variant's
+padding-aware decoded MAE per control, averaged over the horizon-offset
+matrix returned by `evaluate_open_loop`. These remain open-loop diagnostics,
+not closed-loop task-success measurements.
 
 ## SO-101 chunk playback and episode replay
 

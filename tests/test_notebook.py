@@ -197,6 +197,16 @@ def test_colab_produces_every_code_backed_figure():
     assert not missing, f"the Colab never produces {missing}"
 
 
+def test_figure_411_reports_every_trained_head_separately():
+    code = _notebook_code()
+    assert "for name in HEAD_NAMES:" in code
+    assert "open_loop_traces[name] = trace" in code
+    assert "head_name=name" in code
+    assert "figure_4_11_open_loop_episode.png" in code
+    assert "open_loop_metrics" in code
+    assert "mae_in_standard_deviations" in code
+
+
 def test_colab_records_the_provenance_section_461_requires():
     code = _notebook_code()
     for token in ("ANCHOR_INDEX", "N_NEIGHBORS", "SEED", "set_seed"):

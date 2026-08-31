@@ -755,11 +755,14 @@ def plot_open_loop_episode(
     expert,
     valid=None,
     joint_names=None,
+    head_name: str | None = None,
 ):
     """Figure 4.11: a held-out episode trace, one panel per control.
 
     ``predicted`` and ``expert`` are ``[T, D]`` trajectories in the
     dataset's raw action units. ``valid`` optionally masks padded frames.
+    ``head_name`` applies the variant's stable chapter colour, line style,
+    and display name so separate per-head figures remain easy to compare.
     """
     import matplotlib.pyplot as plt
 
@@ -777,6 +780,15 @@ def plot_open_loop_episode(
         raise ValueError("no valid timesteps remain after masking")
 
     names = joint_names or [f"joint {i}" for i in range(pred.shape[1])]
+    policy_style = (
+        head_style(head_name)
+        if head_name is not None
+        else {
+            "color": POLICY_COLOR,
+            "linestyle": "-",
+            "label": "policy",
+        }
+    )
     figure, axes = plt.subplots(
         pred.shape[1], 1,
         figsize=(9, 1.45 * pred.shape[1]),
@@ -789,12 +801,16 @@ def plot_open_loop_episode(
             color=EXPERT_COLOR, alpha=0.78,
         )
         axis.plot(
-            steps, pred[:, index], label="policy", lw=1.0,
-            color=POLICY_COLOR,
+            steps,
+            pred[:, index],
+            label=str(policy_style["label"]),
+            lw=1.0,
+            color=str(policy_style["color"]),
+            ls=str(policy_style["linestyle"]),
         )
         axis.fill_between(
             steps, target[:, index], pred[:, index],
-            color=POLICY_COLOR, alpha=0.10, lw=0,
+            color=str(policy_style["color"]), alpha=0.10, lw=0,
         )
         axis.set_ylabel(names[index], fontsize=9)
         error = float(np.abs(pred[:, index] - target[:, index]).mean())
@@ -804,7 +820,10 @@ def plot_open_loop_episode(
             ha="right", fontsize=8, color="#6E6E76",
         )
     axes[0].legend(loc="upper left", ncols=2)
-    axes[0].set_title("Open-loop chunk prediction on a held-out episode")
+    title = "Open-loop chunk prediction on a held-out episode"
+    if head_name is not None:
+        title = f"{head_label(head_name)} — {title.lower()}"
+    axes[0].set_title(title)
     axes[-1].set_xlabel("episode timestep (30 Hz)")
     return figure
 
