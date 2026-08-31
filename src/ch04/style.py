@@ -79,7 +79,7 @@ def use_manuscript_style() -> None:
             "axes.facecolor": "white",
             "font.size": 10,
             "axes.titlesize": 11,
-            "axes.titleweight": "semibold",
+            "axes.titleweight": "bold",
             "axes.titlepad": 8,
             "axes.labelsize": 10,
             "axes.labelpad": 4,

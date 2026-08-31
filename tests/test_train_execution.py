@@ -110,6 +110,8 @@ def test_training_updates_backbone_and_saves_full_best_checkpoint(
     assert "scheduler" in latest
     assert "normalization" in latest
     assert "validation_loss" in latest
+    assert latest["best_validation_loss"] == latest["validation_loss"]
+    assert [record["step"] for record in latest["history"]] == [1.0]
     assert set(latest["model"]) == {"head", "backbone"}
     assert not any(
         name.startswith("backbone.")
@@ -163,8 +165,73 @@ def test_resume_restores_optimizer_scheduler_and_step(
         head, fake_backbone, [batch] * 2, fake_stats, _tokenizer(),
         "cpu", resume_from=tmp_path / "latest.pt", **common,
     )
-    # The run is already complete, so a resume performs no further steps.
-    assert history == []
+    # The run is already complete, so resume restores the complete curve
+    # without performing more optimizer steps.
+    assert [record["step"] for record in history] == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_checkpoints_are_mirrored_to_durable_storage(
+    fake_backbone, fake_stats, tmp_path
+):
+    from ch04 import ParallelDecodeActionHead
+
+    local = tmp_path / "local"
+    durable = tmp_path / "drive"
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    train_action_head(
+        head,
+        fake_backbone,
+        [_batch()],
+        fake_stats,
+        _tokenizer(),
+        "cpu",
+        total_steps=1,
+        warmup_steps=0,
+        log_every=1,
+        checkpoint_every=1,
+        checkpoint_dir=local,
+        checkpoint_mirror_dir=durable,
+        validation_loader=[_batch()],
+        snapshot_steps=(1,),
+    )
+    expected = {"latest.pt", "best.pt", "step000001.pt"}
+    assert {path.name for path in durable.glob("*.pt")} == expected
+    assert not list(durable.glob(".*.tmp"))
+    for name in expected:
+        local_state = torch.load(local / name, weights_only=False)
+        durable_state = torch.load(durable / name, weights_only=False)
+        assert durable_state["step"] == local_state["step"] == 1
+
+
+def test_drive_mirror_failure_keeps_local_checkpoint_and_training_alive(
+    fake_backbone, fake_stats, monkeypatch, tmp_path, capsys
+):
+    import ch04.train as train_module
+    from ch04 import ParallelDecodeActionHead
+
+    def fail_copy(*_args, **_kwargs):
+        raise OSError("Drive disconnected")
+
+    monkeypatch.setattr(train_module.shutil, "copy2", fail_copy)
+    local = tmp_path / "local"
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    history = train_action_head(
+        head,
+        fake_backbone,
+        [_batch()],
+        fake_stats,
+        _tokenizer(),
+        "cpu",
+        total_steps=1,
+        warmup_steps=0,
+        log_every=1,
+        checkpoint_every=1,
+        checkpoint_dir=local,
+        checkpoint_mirror_dir=tmp_path / "drive",
+    )
+    assert len(history) == 1
+    assert (local / "latest.pt").exists()
+    assert "warning: could not mirror latest.pt" in capsys.readouterr().out
 
 
 def test_snapshots_are_off_by_default(

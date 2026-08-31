@@ -60,8 +60,68 @@ def test_colab_trains_all_three_heads():
     assert calls == sorted(calls)
 
 
+def _bound_names(tree) -> set:
+    """Every name a cell binds: imports, assignments, defs, loop targets."""
+    import ast
+
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            bound.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.alias):
+            bound.add((node.asname or node.name).split(".")[0])
+    return bound
+
+
+def _module_level_loads(tree) -> set:
+    """Names read at module level, ignoring deferred function bodies.
+
+    A function body may reference a global defined by a later cell: that
+    resolves at call time and is a normal notebook pattern. A name read at
+    module level must already exist, which is the failure this catches.
+    """
+    import ast
+
+    loaded = set()
+
+    scopes = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        ast.ClassDef,
+    )
+
+    def visit(node, deferred):
+        if isinstance(node, scopes):
+            deferred = True
+        if (
+            not deferred
+            and isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+        ):
+            loaded.add(node.id)
+        for child in ast.iter_child_nodes(node):
+            visit(child, deferred)
+
+    visit(tree, False)
+    return loaded
+
+
 def test_colab_defines_every_name_it_uses():
-    """A spliced cell that reads a function local would fail at runtime."""
+    """A cell reading a function local at module level would fail."""
     import ast
     import builtins
 
@@ -72,25 +132,51 @@ def test_colab_defines_every_name_it_uses():
         if cell["cell_type"] != "code":
             continue
         tree = ast.parse("".join(cell["source"]))
-        loaded, stored = set(), set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name):
-                (loaded if isinstance(node.ctx, ast.Load) else stored).add(
-                    node.id
-                )
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                for alias in node.names:
-                    stored.add((alias.asname or alias.name).split(".")[0])
-            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                stored.add(node.name)
-                stored.update(
-                    argument.arg
-                    for argument in ast.walk(node)
-                    if isinstance(argument, ast.arg)
-                )
-        missing = sorted(loaded - stored - available)
+        missing = sorted(
+            _module_level_loads(tree) - _bound_names(tree) - available
+        )
         assert not missing, f"cell {index} reads undefined {missing}"
-        available |= stored
+        available |= _bound_names(tree)
+
+
+def test_run_configuration_precedes_the_trainers():
+    """TRAIN_STEPS must be editable without re-running a training cell."""
+    path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
+    notebook = json.loads(path.read_text())
+    sources = [
+        "".join(cell["source"]) if cell["cell_type"] == "code" else ""
+        for cell in notebook["cells"]
+    ]
+    assigns = [
+        index for index, src in enumerate(sources)
+        if "TRAIN_STEPS = " in src
+    ]
+    trains = [
+        index for index, src in enumerate(sources)
+        if "run_head_experiment('" in src
+    ]
+    assert len(assigns) == 1, "TRAIN_STEPS must be set in exactly one cell"
+    assert len(trains) == 3, "expected one cell per head"
+    # Set before any trainer runs, and never in the same cell as one.
+    assert assigns[0] < min(trains)
+    assert assigns[0] not in trains
+    # Every knob the three runs share lives in that one cell, so the
+    # heads cannot silently receive different budgets.
+    config = sources[assigns[0]]
+    for knob in (
+        "RUN_MODE",
+        "GRID_SAMPLES",
+        "AR_GRID_SAMPLES",
+        "EVAL_BATCHES",
+        "WARMUP_STEPS",
+        "LOG_EVERY",
+        "CHECKPOINT_EVERY",
+        "VALIDATE_EVERY",
+    ):
+        assert f"{knob} = " in config, knob
+    # The trainer cells take the budget from it rather than restating it.
+    for index in trains:
+        assert "steps=" not in sources[index], sources[index]
 
 
 def test_colab_produces_every_code_backed_figure():
@@ -126,6 +212,22 @@ def test_colab_has_fixed_sanity_and_full_training_modes():
     assert "tensorboard_log_dir" in code
     assert "plot_per_joint_metrics" in code
     assert "export_action_chunk" in code
+
+
+def test_full_colab_mirrors_and_resumes_checkpoints_from_google_drive():
+    code = _notebook_code()
+    text = _notebook_text()
+    for token in (
+        "SAVE_TO_GOOGLE_DRIVE = True",
+        "RESUME_FROM_GOOGLE_DRIVE = False",
+        "DRIVE_CHECKPOINT_ROOT",
+        "drive.mount('/content/drive')",
+        "checkpoint_mirror_dir=mirror_dir",
+        "resume_from=resume_path",
+    ):
+        assert token in code
+    assert "every 1,000-step local checkpoint" in text
+    assert "atomically" in text
 
 def test_colab_setup_removes_only_broken_optional_torchaudio():
     path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"

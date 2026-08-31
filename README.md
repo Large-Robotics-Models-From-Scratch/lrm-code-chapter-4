@@ -83,6 +83,7 @@ For a full run with live loss curves:
 ```bash
 ch04-train --head all --steps 20000 \
   --checkpoint-dir checkpoints \
+  --checkpoint-mirror-dir /path/to/durable-storage/ch04 \
   --tensorboard-dir runs/ch04
 ```
 
@@ -100,7 +101,13 @@ A checkpoint carries the whole float32
 backbone and runs to roughly 1.9 GB, so permanent snapshots are opt-in via
 `--snapshot-steps 5000 20000`. `--resume-from` restores the model,
 optimizer, scheduler, and step count, and refuses a checkpoint whose
-configuration or tokenizer bounds differ.
+configuration or tokenizer bounds differ. The optional
+`--checkpoint-mirror-dir` keeps fast writes under `--checkpoint-dir`, then
+atomically copies each head's `latest.pt`, improved `best.pt`, and requested
+snapshots to durable storage. A mirror outage emits a warning without
+interrupting training; the next checkpoint retries `latest.pt`. Checkpoints
+also carry metric history and the best held-out loss, so resumed loss and
+per-joint curves continue from the earlier session.
 
 The reporting follows the useful part of OpenVLA's training loop:
 categorical loss is paired with exact action-token accuracy and decoded
@@ -184,7 +191,9 @@ imports, and drops cached chapter modules.
    **Runtime > Change runtime type > GPU**. A fresh runtime is recommended
    when changing package revisions.
 2. Run the setup and data cells once. In **Choose a run mode**, set
-   `RUN_MODE = 'full'`. The two supported modes are intentionally fixed:
+   `RUN_MODE = 'full'`. Leave `SAVE_TO_GOOGLE_DRIVE` enabled, choose a stable
+   `DRIVE_FOLDER` and unique `DRIVE_RUN_NAME`, and approve Colab's Drive
+   mount. The two supported modes are intentionally fixed:
    `sanity` runs 10 steps per head and prints every loss; `full` runs
    exactly 20,000 steps per head, logs every 25 steps, validates and
    refreshes restartable checkpoints every 1,000 steps, and gives every
@@ -192,12 +201,23 @@ imports, and drops cached chapter modules.
 3. Run sections 4.5.1 through 4.5.3 in order. Do not reuse one head's
    backbone for another. The **Training curves, side by side** cell saves
    `/content/ch04-checkpoints/training_curves.png` and embeds TensorBoard
-   from `/content/ch04-checkpoints/tensorboard`.
-4. Keep the browser tab connected. Colab storage is ephemeral: download
-   `best.pt`, `latest.pt`, the TensorBoard directory, and the static curve
-   before resetting the runtime. Each full-policy checkpoint is roughly
-   1.9 GB because it includes the float32 backbone.
-5. Only interpret the comparison figures from `full` mode. Sanity-mode
+   from `/content/ch04-checkpoints/tensorboard`. Training writes locally
+   first, then atomically mirrors checkpoint files and report PNGs to
+   `MyDrive/<DRIVE_FOLDER>/<DRIVE_RUN_NAME>/<head>/`. `latest.pt` is replaced
+   every 1,000 steps; `best.pt` changes only when held-out loss improves.
+4. After a disconnect, start a GPU runtime, use the same Drive folder and
+   run name, set `RESUME_FROM_GOOGLE_DRIVE = True`, and rerun setup, data,
+   configuration, and the relevant trainer cell. Resume restores the model,
+   optimizer, scheduler, step, best-validation state, and accumulated metric
+   history. Do not change the 20,000-step configuration or tokenizer bounds;
+   the trainer rejects incompatible checkpoints instead of silently mixing
+   experiments.
+5. TensorBoard event files remain on Colab's local disk, so download that
+   directory if you need the interactive log after the runtime ends. The
+   static training and per-joint plots are mirrored to Drive. Each policy
+   checkpoint is roughly 1.9 GB because it includes the float32 backbone;
+   budget for both `latest.pt` and `best.pt` for each trained head.
+6. Only interpret the comparison figures from `full` mode. Sanity-mode
    figures verify shapes and code paths, not convergence.
 
 The joint-mismatch figure reads categorical probability mass directly

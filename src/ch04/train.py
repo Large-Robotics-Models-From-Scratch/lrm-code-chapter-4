@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import shutil
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
 from pathlib import Path
@@ -384,6 +385,8 @@ def _checkpoint_payload(
     scheduler,
     validation_loss: float | None,
     validation_metrics: Mapping[str, object] | None,
+    best_validation_loss: float,
+    history: list[dict[str, float]],
     stats,
     tokenizer,
     config,
@@ -395,6 +398,8 @@ def _checkpoint_payload(
         "scheduler": scheduler.state_dict(),
         "validation_loss": validation_loss,
         "validation_metrics": validation_metrics,
+        "best_validation_loss": best_validation_loss,
+        "history": history,
         "normalization": stats,
         "tokenizer": {
             "lo": torch.from_numpy(tokenizer.lo.copy()),
@@ -403,6 +408,29 @@ def _checkpoint_payload(
         },
         "config": config,
     }
+
+
+def _mirror_checkpoint(source: Path, mirror_dir: Path) -> bool:
+    """Atomically mirror one local checkpoint to durable storage.
+
+    Colab's Google Drive mount is much slower and less reliable than its
+    local disk, so training writes locally first. A failed mirror leaves the
+    local checkpoint intact and is retried naturally at the next interval.
+    """
+    destination = mirror_dir / source.name
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    try:
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+    except OSError as error:
+        print(
+            f"warning: could not mirror {source.name} to "
+            f"{mirror_dir}: {error}"
+        )
+        return False
+    print(f"mirrored checkpoint: {destination}")
+    return True
 
 
 def train_action_head(
@@ -421,6 +449,7 @@ def train_action_head(
     log_every: int = 100,
     checkpoint_every: int = 1_000,
     checkpoint_dir: str | Path | None = None,
+    checkpoint_mirror_dir: str | Path | None = None,
     validation_loader: Iterable[Mapping[str, object]] | None = None,
     resume_from: str | Path | None = None,
     upcast_backbone: bool = True,
@@ -432,10 +461,14 @@ def train_action_head(
     """Train a factorized, autoregressive, or parallel action head.
 
     ``latest.pt`` is rewritten every ``checkpoint_every`` steps and
-    ``best.pt`` whenever the held-out loss improves. ``snapshot_steps``
-    additionally keeps a permanent copy at the given steps; it is empty by
-    default because a policy checkpoint carries the whole float32 backbone
-    and runs to roughly a gigabyte.
+    ``best.pt`` whenever the held-out loss improves. If
+    ``checkpoint_mirror_dir`` is set, each file is written to fast local
+    storage first and then copied atomically to that durable location.
+    Mirror failures warn rather than discarding the local checkpoint or
+    stopping training. ``snapshot_steps`` additionally keeps a permanent
+    copy at the given steps; it is empty by default because a policy
+    checkpoint carries the whole float32 backbone and runs to roughly a
+    gigabyte.
 
     Every history record carries ``validation_loss``: the held-out token
     cross-entropy measured just after that record's optimizer step, or NaN
@@ -483,6 +516,13 @@ def train_action_head(
     if checkpoint_dir is not None:
         checkpoint_path = Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
+    mirror_path = None
+    if checkpoint_mirror_dir is not None:
+        if checkpoint_path is None:
+            raise ValueError(
+                "checkpoint_mirror_dir requires checkpoint_dir"
+            )
+        mirror_path = Path(checkpoint_mirror_dir)
 
     config = {
         "total_steps": total_steps,
@@ -522,9 +562,12 @@ def train_action_head(
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         step = int(checkpoint["step"])
-        saved_validation = checkpoint.get("validation_loss")
-        if saved_validation is not None:
-            best_validation = float(saved_validation)
+        history = [dict(record) for record in checkpoint.get("history", [])]
+        saved_best = checkpoint.get(
+            "best_validation_loss", checkpoint.get("validation_loss")
+        )
+        if saved_best is not None:
+            best_validation = float(saved_best)
 
     writer = None
     if tensorboard_log_dir is not None:
@@ -733,6 +776,12 @@ def train_action_head(
                     )
                 print(message)
             if should_checkpoint:
+                best_updated = (
+                    validation is not None
+                    and validation < best_validation
+                )
+                if best_updated:
+                    best_validation = validation
                 payload = _checkpoint_payload(
                     step=completed_step,
                     head=head,
@@ -741,19 +790,31 @@ def train_action_head(
                     scheduler=scheduler,
                     validation_loss=validation,
                     validation_metrics=validation_metrics,
+                    best_validation_loss=best_validation,
+                    history=history,
                     stats=stats,
                     tokenizer=tokenizer,
                     config=config,
                 )
-                torch.save(payload, checkpoint_path / "latest.pt")
-                if validation is not None and validation < best_validation:
-                    best_validation = validation
-                    torch.save(payload, checkpoint_path / "best.pt")
+                latest_path = checkpoint_path / "latest.pt"
+                torch.save(payload, latest_path)
+                written_paths = [latest_path]
+                if best_updated:
+                    best_path = checkpoint_path / "best.pt"
+                    torch.save(payload, best_path)
+                    written_paths.append(best_path)
                 if completed_step in snapshot_steps:
+                    snapshot_path = (
+                        checkpoint_path / f"step{completed_step:06d}.pt"
+                    )
                     torch.save(
                         payload,
-                        checkpoint_path / f"step{completed_step:06d}.pt",
+                        snapshot_path,
                     )
+                    written_paths.append(snapshot_path)
+                if mirror_path is not None:
+                    for written_path in written_paths:
+                        _mirror_checkpoint(written_path, mirror_path)
                 if writer is not None:
                     writer.flush()
             step = completed_step

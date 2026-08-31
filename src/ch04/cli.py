@@ -116,6 +116,11 @@ def _train_one_head(
     ).to(device)
 
     checkpoint_dir = Path(arguments.checkpoint_dir) / name
+    checkpoint_mirror_dir = (
+        Path(arguments.checkpoint_mirror_dir) / name
+        if arguments.checkpoint_mirror_dir is not None
+        else None
+    )
     tensorboard_dir = (
         Path(arguments.tensorboard_dir) / name
         if arguments.tensorboard_dir is not None
@@ -139,6 +144,7 @@ def _train_one_head(
             log_every=arguments.log_every,
             checkpoint_every=arguments.checkpoint_every,
             checkpoint_dir=checkpoint_dir,
+            checkpoint_mirror_dir=checkpoint_mirror_dir,
             validation_loader=validation_loader,
             resume_from=arguments.resume_from,
             validation_batches=arguments.validation_batches,
@@ -192,6 +198,11 @@ def _train_one_head(
         "history": history,
         "tensorboard_log_dir": (
             str(tensorboard_dir) if tensorboard_dir is not None else None
+        ),
+        "checkpoint_mirror_dir": (
+            str(checkpoint_mirror_dir)
+            if checkpoint_mirror_dir is not None
+            else None
         ),
     }
     if arguments.open_loop_batches > 0:
@@ -284,6 +295,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint-every", type=int, default=1_000)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument(
+        "--checkpoint-mirror-dir",
+        default=None,
+        help=(
+            "optional durable root that receives atomic per-head copies "
+            "of latest.pt, best.pt, and requested snapshots"
+        ),
+    )
     parser.add_argument(
         "--tensorboard-dir",
         default=None,

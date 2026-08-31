@@ -445,6 +445,7 @@ def test_cli_parser_defaults_and_all_expansion():
     assert arguments.learning_rate == 1e-4
     assert arguments.backbone_learning_rate == 1e-5
     assert arguments.label_smoothing == 0.05
+    assert arguments.checkpoint_mirror_dir is None
     every = build_parser().parse_args(["--head", "all"])
     assert every.head == ["all"]
     assert resolve_device("cpu").type == "cpu"
