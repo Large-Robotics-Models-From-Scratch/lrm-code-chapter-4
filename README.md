@@ -142,16 +142,16 @@ ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
 | --- | --- | --- |
 | 4.4 | `diagnostics.plot_bimodal_comparison` | MSE collapse against a two-component mixture |
 | 4.8 | `analysis.neighborhood_softmax_figure` | listing 4.9's held-out softmax cluster |
-| 4.9 | `diagnostics.plot_joint_logit_panels` | expert and direct logit-implied pair mass, separate panels |
-| §4.6.2 | `diagnostics.plot_temporal_traces` | sampled bins across a chunk, per head |
+| 4.9 | `diagnostics.plot_joint_sample_panels` | expert support and true deployment samples on one shared scale |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
 | 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands, one six-control figure per trained head |
 | — | `diagnostics.plot_training_curves` | train/held-out CE and token accuracy |
 | — | `diagnostics.plot_per_joint_metrics` | per-control train/held-out accuracy and MAE |
 | — | `diagnostics.plot_head_comparison` | final metric per head |
 
-All of them share one look. `ch04.style.use_manuscript_style()` sets the
-matplotlib defaults, and `ch04.style.HEAD_STYLES` reserves a colour, dash
+All of them share one look. `ch04.style.use_manuscript_style()` requests
+Verdana (with a deterministic DejaVu Sans fallback), uses Chapter 2's
+blue/orange/green palette, and `ch04.style.HEAD_STYLES` reserves a colour, dash
 pattern, and marker per action head so a reader can carry one head's
 identity across every figure — and so the three stay separable in
 grayscale print. The Colab calls it once in its setup cell; `ch04-figures`
@@ -167,8 +167,9 @@ The [Chapter 4 Colab](notebooks/ch04.ipynb) installs all three chapter
 repositories, demonstrates MSE collapse against a fitted mixture, fits the
 tokenizer, and constructs episode-disjoint LeRobot action chunks. A shared
 experiment runner then trains, visualizes, samples, and evaluates the
-factorized, autoregressive, and parallel heads in order, each from its own
-fresh Chapter 3 backbone, before producing the section 4.6 and 4.7 figures.
+factorized, parallel, and autoregressive heads in manuscript order, each from
+its own fresh Chapter 3 backbone and paired shuffled minibatch stream, before
+producing the section 4.6 and 4.7 figures.
 
 Setup installs the public Chapter 2, 3, and 4 packages directly from
 GitHub and prints pip's full diagnostic on failure. Two Colab-specific
@@ -220,13 +221,12 @@ imports, and drops cached chapter modules.
 6. Only interpret the comparison figures from `full` mode. Sanity-mode
    figures verify shapes and code paths, not convergence.
 
-The joint-mismatch figure reads categorical probability mass directly
-from the logits over held-out frames. It does not estimate a density from
-sample counts. The expert distribution has its own panel, which avoids
-covering either distribution with overlaid points. For the
-autoregressive head, the later cell's logits are teacher-forced on the
-demonstrated preceding bins; this is a conditional diagnostic rather than
-an exhaustive enumeration of all 256-valued prefixes.
+The joint-mismatch figure derives two mode splits and supported quadrants
+from held-out expert pairs, then plots coarsened histograms of true deployment
+samples from every head. The autoregressive samples therefore condition on
+the model's own earlier choices rather than a demonstrated prefix. A shared
+square-root color scale reveals diffuse off-support mass without letting a
+few expert spikes wash out the policy panels.
 
 Figure 4.11 is generated only after all three heads have trained. It writes
 one six-control plot per variant, using the same ordered held-out frames in

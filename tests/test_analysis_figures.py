@@ -23,6 +23,7 @@ from ch04.analysis import (
     sampled_grids_by_head,
     select_bimodal_anchor,
     select_coupled_control_pair,
+    select_pair_mode_support,
     select_representative_open_loop_window,
     set_seed,
 )
@@ -39,6 +40,7 @@ from ch04.diagnostics import (
     plot_head_comparison,
     plot_joint_logit_panels,
     plot_joint_mismatch_panels,
+    plot_joint_sample_panels,
     plot_neighbor_softmaxes,
     plot_open_loop_episode,
     plot_open_loop_offset_errors,
@@ -101,15 +103,36 @@ def test_neighbor_softmax_figure_has_targets_and_curves():
         probabilities, targets, n_curves=3, caption="ckpt=x seed=0"
     )
     upper, lower = figure.axes
-    assert "Held-out action distribution" in upper.get_title()
+    assert (
+        "Expert targets near one proprioceptive state" in upper.get_title()
+    )
     assert "action bin" in lower.get_xlabel()
     # Provenance moves to a figure footnote so it cannot stretch the axes.
     assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
-    # Three individual curves plus the cluster mean.
-    assert len(lower.lines) == 4
+    # Three neighbours plus the emphasized anchor and neighbourhood mean.
+    assert len(lower.lines) == 5
     plt.close(figure)
     with pytest.raises(ValueError, match="one target bin"):
         plot_neighbor_softmaxes(probabilities, targets[:2])
+
+
+def test_joint_sample_panels_use_expert_derived_support():
+    rng = np.random.default_rng(4)
+    low = rng.normal(55, 3, size=(64, 2))
+    high = rng.normal(200, 3, size=(64, 2))
+    expert = np.concatenate([low, high])
+    support = select_pair_mode_support(expert)
+    mismatch = np.column_stack([
+        rng.normal(55, 3, 128), rng.normal(200, 3, 128)
+    ])
+    figure = plot_joint_sample_panels(
+        {"factorized": mismatch},
+        expert,
+        support["splits"],
+        support["supported_quadrants"],
+    )
+    assert "off support" in figure.axes[1].get_title()
+    plt.close(figure)
 
 
 def test_bimodal_comparison_overlays_the_mixture_density():

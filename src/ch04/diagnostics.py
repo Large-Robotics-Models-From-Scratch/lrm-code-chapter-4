@@ -424,9 +424,10 @@ def plot_neighbor_softmaxes(
     """Figure 4.8: held-out softmaxes around one proprioceptive anchor.
 
     The upper panel histograms the demonstrated bins of the neighbourhood.
-    The lower panel overlays ``n_curves`` individual softmaxes with the
-    cluster mean, so a bimodal individual curve can be told apart from a
-    bimodal average over slightly different inputs.
+    The lower panel emphasizes the anchor prediction and overlays a few
+    neighbours selected across the demonstrated target range.  This makes
+    the two expert modes visible without letting six nearly identical lines
+    hide the actual comparison.
     """
     import matplotlib.pyplot as plt
 
@@ -444,36 +445,75 @@ def plot_neighbor_softmaxes(
         2, 1, figsize=(8, 5.2), sharex=True,
         gridspec_kw={"height_ratios": [1, 2.1]},
     )
-    axes[0].hist(
+    counts, edges, _ = axes[0].hist(
         targets,
-        bins=min(64, bin_count),
+        bins=min(32, bin_count),
         range=(0, bin_count),
         color=EXPERT_COLOR,
-        alpha=0.85,
+        alpha=0.80,
     )
     axes[0].set_ylabel("expert frames")
     axes[0].set_title(
-        f"Held-out action distribution near one state "
-        f"({probs.shape[0]} nearest frames)"
+        f"Expert targets near one proprioceptive state "
+        f"({probs.shape[0]} held-out frames)"
     )
+
+    ordered_targets = np.sort(targets.astype(float))
+    minimum_group = max(2, int(np.ceil(0.2 * len(ordered_targets))))
+    eligible = np.arange(
+        minimum_group - 1, len(ordered_targets) - minimum_group
+    )
+    if eligible.size:
+        split_index = int(
+            eligible[np.argmax(np.diff(ordered_targets)[eligible])]
+        )
+        mode_peaks = (
+            float(np.median(ordered_targets[: split_index + 1])),
+            float(np.median(ordered_targets[split_index + 1 :])),
+        )
+        for peak in mode_peaks:
+            axes[0].axvline(peak, color=UNSUPPORTED_COLOR, ls="--", lw=1.0)
+            axes[0].annotate(
+                f"mode {peak:.0f}",
+                xy=(peak, max(counts.max(), 1.0)),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8,
+                color=UNSUPPORTED_COLOR,
+            )
 
     axis = np.arange(probs.shape[1])
     shown = min(n_curves, probs.shape[0])
-    for index, row in enumerate(probs[:shown]):
+    representative = np.unique(
+        np.linspace(0, probs.shape[0] - 1, shown, dtype=int)
+    )
+    target_order = np.argsort(targets, kind="stable")
+    representative = target_order[representative]
+    for index in representative:
         axes[1].plot(
             axis,
-            row,
-            color=SUPPORTED_COLOR,
-            alpha=0.45,
-            lw=0.8,
-            label="individual softmax" if index == 0 else None,
+            probs[index],
+            color=NEUTRAL_COLOR,
+            alpha=0.35,
+            lw=0.75,
+            label=(
+                "nearby predictions"
+                if index == representative[0]
+                else None
+            ),
         )
     axes[1].plot(
         axis,
-        probs.mean(axis=0),
+        probs[0],
         color=POLICY_COLOR,
-        lw=1.35,
-        label="cluster mean",
+        lw=1.8,
+        label="anchor prediction",
+        zorder=4,
+    )
+    axes[1].plot(
+        axis, probs.mean(axis=0), color=SUPPORTED_COLOR, lw=1.15,
+        ls="--", label="neighbourhood mean",
     )
     axes[1].set(
         xlabel=f"action bin (0-{bin_count - 1})",
@@ -481,12 +521,104 @@ def plot_neighbor_softmaxes(
         xlim=(0, bin_count - 1),
     )
     axes[1].set_title(
-        f"Policy marginals for the same cell ({shown} of "
-        f"{probs.shape[0]} shown)"
+        f"One policy cell at nearby proprioceptive states "
+        f"({len(representative)} examples shown)"
     )
     axes[1].legend(loc="upper right")
     if caption:
         annotate_source(figure, caption)
+    return figure
+
+
+def plot_joint_sample_panels(
+    samples_by_head: dict,
+    expert_pairs: np.ndarray,
+    splits: tuple[float, float],
+    supported_quadrants: np.ndarray,
+    n_bins: int = 16,
+    bin_range: tuple[int, int] = (0, 256),
+    dim_labels: tuple[str, str] = ("A", "B"),
+):
+    """Figure 4.9 from expert pairs and true deployment samples.
+
+    Every panel is a normalized histogram on one shared square-root color
+    scale. Dashed, expert-derived mode splits expose the four combinations;
+    each policy title reports the mass assigned to combinations rarely or
+    never demonstrated by the expert.
+    """
+    import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
+
+    if not samples_by_head:
+        raise ValueError("samples_by_head must contain at least one head")
+    expert = np.asarray(expert_pairs)
+    support = np.asarray(supported_quadrants, dtype=bool).reshape(-1)
+    if expert.ndim != 2 or expert.shape[1] != 2 or expert.shape[0] == 0:
+        raise ValueError("expert_pairs must be non-empty with shape [N, 2]")
+    if support.shape != (4,) or not bool(support.any()):
+        raise ValueError("supported_quadrants must be a non-empty [4] mask")
+    if n_bins < 4:
+        raise ValueError("n_bins must be at least four")
+
+    panels = {"expert": expert}
+    for name, values in samples_by_head.items():
+        pairs = np.asarray(values)
+        if pairs.ndim != 2 or pairs.shape[1] != 2 or pairs.shape[0] == 0:
+            raise ValueError(f"{name} samples must have shape [N, 2]")
+        panels[name] = pairs
+
+    edges = np.linspace(bin_range[0], bin_range[1], n_bins + 1)
+    grids = {}
+    for name, pairs in panels.items():
+        grid = np.histogram2d(
+            pairs[:, 0], pairs[:, 1], bins=[edges, edges]
+        )[0]
+        grids[name] = grid / max(grid.sum(), 1.0)
+    vmax = max(float(grid.max()) for grid in grids.values()) or 1.0
+    norm = colors.PowerNorm(gamma=0.5, vmin=0.0, vmax=vmax)
+
+    names = list(panels)
+    figure, axes = plt.subplots(
+        1, len(names), figsize=(3.25 * len(names) + 0.7, 3.35),
+        squeeze=False, sharex=True, sharey=True,
+    )
+    mesh = None
+    for axis, name in zip(axes[0], names, strict=True):
+        mesh = axis.pcolormesh(
+            edges, edges, grids[name].T, cmap="Blues", norm=norm,
+            shading="flat", rasterized=True,
+        )
+        axis.axvline(splits[0], color="#4A4A50", ls="--", lw=0.9)
+        axis.axhline(splits[1], color="#4A4A50", ls="--", lw=0.9)
+        if name == "expert":
+            title = f"expert\nn={len(panels[name])}"
+            colour = EXPERT_COLOR
+        else:
+            pairs = panels[name]
+            quadrant = (
+                (pairs[:, 0] >= splits[0]).astype(int) * 2
+                + (pairs[:, 1] >= splits[1]).astype(int)
+            )
+            off_support = float(np.mean(~support[quadrant]))
+            title = f"{head_label(name)}\n{off_support:.1%} off support"
+            colour = head_color(name)
+        axis.set(
+            xlabel=f"{dim_labels[0]} action bin",
+            title=title,
+            xlim=bin_range,
+            ylim=bin_range,
+        )
+        axis.title.set_color(colour)
+        axis.set_aspect("equal")
+        axis.grid(False)
+    axes[0][0].set_ylabel(f"{dim_labels[1]} action bin")
+    figure.suptitle(
+        "Which two-control mode combinations does each head emit?"
+    )
+    bar = figure.colorbar(
+        mesh, ax=axes[0].tolist(), fraction=0.022, pad=0.018
+    )
+    bar.set_label("probability per displayed cell", fontsize=9)
     return figure
 
 
@@ -1182,6 +1314,16 @@ def plot_quality_compute_tradeoff(
 
     figure, axis = plt.subplots(figsize=(7.2, 4.2))
     for name, x, y in points:
+        xerr = None
+        if latency:
+            timing = latency[name]
+            if "p10_ms" in timing and "p90_ms" in timing:
+                xerr = np.asarray([[x - timing["p10_ms"]],
+                                   [timing["p90_ms"] - x]])
+                axis.errorbar(
+                    x, y, xerr=xerr, fmt="none", ecolor=head_color(name),
+                    elinewidth=1.0, capsize=3, alpha=0.75, zorder=2,
+                )
         axis.scatter(
             x, y, s=90, color=head_color(name), zorder=3,
             label=head_label(name),
@@ -1191,10 +1333,17 @@ def plot_quality_compute_tradeoff(
             steps = int(depth[name]["serial_steps"])
             plural = "" if steps == 1 else "s"
             caption += f"\n{steps} serial step{plural}"
+        above_midpoint = y > np.median([point[2] for point in points])
+        is_rightmost = x == max(point[1] for point in points)
         axis.annotate(
             caption,
-            xy=(x, y), xytext=(6, 6), textcoords="offset points",
+            xy=(x, y),
+            xytext=(-6 if is_rightmost else 6,
+                    -8 if above_midpoint else 6),
+            textcoords="offset points",
             fontsize=8.5,
+            va="top" if above_midpoint else "bottom",
+            ha="right" if is_rightmost else "left",
         )
 
     frontier = []
@@ -1211,6 +1360,9 @@ def plot_quality_compute_tradeoff(
             label="non-dominated frontier",
         )
     axis.set_xscale("log", base=2)
+    from matplotlib.ticker import ScalarFormatter
+
+    axis.xaxis.set_major_formatter(ScalarFormatter())
     axis.set(
         xlabel=(
             "measured inference latency per example (ms)"
@@ -1220,8 +1372,9 @@ def plot_quality_compute_tradeoff(
             else "serial prediction steps (decode-schedule proxy)"
         ),
         ylabel="open-loop MAE / training std (lower is better)",
-        title="Quality–compute trade-off for the three discrete heads",
+        title="Quality–latency trade-off for the three discrete heads",
     )
+    axis.margins(y=0.12)
     axis.legend(loc="best")
     annotate_source(
         axis.figure,

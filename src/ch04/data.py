@@ -107,6 +107,32 @@ def make_chunked_dataloaders(
     return train_loader, validation_loader, stats
 
 
+def clone_dataloader(loader, *, shuffle: bool, seed: int | None = None):
+    """Clone a loader while optionally fixing its shuffled batch order.
+
+    Architectural comparisons should not let the first head consume one
+    shuffled stream and the next head consume another.  Cloning from the
+    same dataset with the same generator seed pairs the minibatch order
+    without re-reading metadata or recomputing normalization statistics.
+    """
+    generator = None
+    if seed is not None:
+        generator = torch.Generator().manual_seed(seed)
+    return torch.utils.data.DataLoader(
+        loader.dataset,
+        batch_size=loader.batch_size,
+        shuffle=shuffle,
+        num_workers=loader.num_workers,
+        collate_fn=loader.collate_fn,
+        pin_memory=loader.pin_memory,
+        drop_last=loader.drop_last,
+        timeout=loader.timeout,
+        worker_init_fn=loader.worker_init_fn,
+        generator=generator,
+        persistent_workers=loader.persistent_workers,
+    )
+
+
 def _make_chunk_loader(
     dataset_id: str,
     fps: int,

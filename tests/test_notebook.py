@@ -52,10 +52,10 @@ def test_colab_trains_all_three_heads():
     assert "def make_policy" in code
     assert "VLABackbone().to(device)" in code
     assert "ch04-train --head all" in _notebook_text()
-    # The heads must run in manuscript order: one-shot, AR, then parallel.
+    # The heads must run in manuscript order: one-shot, parallel, then AR.
     calls = [
         code.index(f"results['{name}'] = run_head_experiment(")
-        for name in ("factorized", "autoregressive", "parallel")
+        for name in ("factorized", "parallel", "autoregressive")
     ]
     assert calls == sorted(calls)
 
@@ -165,10 +165,10 @@ def test_run_configuration_precedes_the_trainers():
     config = sources[assigns[0]]
     for knob in (
         "RUN_MODE",
-        "GRID_SAMPLES",
-        "AR_GRID_SAMPLES",
-        "EVAL_BATCHES",
-        "PLOT_BATCHES",
+            "TRAIN_SEED",
+            "EVAL_BATCHES",
+            "PLOT_BATCHES",
+            "OPEN_LOOP_BATCHES",
         "N_NEIGHBORS",
         "OPEN_LOOP_STEPS",
         "WARMUP_STEPS",
@@ -188,8 +188,7 @@ def test_colab_produces_every_code_backed_figure():
     required = {
         "figure 4.4": "plot_bimodal_comparison",
         "figure 4.8": "neighborhood_softmax_figure",
-        "figure 4.9": "plot_joint_logit_panels",
-        "section 4.6.2": "plot_temporal_traces",
+        "figure 4.9": "plot_joint_sample_panels",
         "figure 4.10": "plot_execution_schedules",
         "figure 4.11": "plot_open_loop_episode",
         "section 4.6 trade-off": "plot_quality_compute_tradeoff",

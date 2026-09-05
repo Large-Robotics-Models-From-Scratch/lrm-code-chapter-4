@@ -159,6 +159,42 @@ def collect_cell_softmaxes(
     }
 
 
+@torch.no_grad()
+def collect_action_softmaxes(
+    head,
+    backbone,
+    loader: Iterable[Mapping[str, object]],
+    stats,
+    tokenizer,
+    device: torch.device | str,
+    max_batches: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Gather every action cell in one held-out forward-pass sweep.
+
+    This is the efficient source for a representative Figure 4.8 search:
+    callers can scan timestep/control cells without rerunning the backbone
+    once per candidate.
+    """
+    states, probabilities, targets, valid = [], [], [], []
+    with evaluation_mode(head), evaluation_mode(backbone):
+        for batch in _batches(loader, max_batches):
+            model_inputs = prepare_batch(batch, stats, device, backbone)
+            bins, pad = action_targets(batch, stats, tokenizer, device)
+            logits = action_head_logits(head, backbone, model_inputs, bins)
+            states.append(model_inputs[2].float().cpu().numpy())
+            probabilities.append(logits.softmax(dim=-1).float().cpu().numpy())
+            targets.append(bins.cpu().numpy())
+            valid.append((~pad).cpu().numpy())
+    if not states:
+        raise ValueError("the loader produced no valid frames")
+    return {
+        "states": np.concatenate(states),
+        "probabilities": np.concatenate(probabilities),
+        "target_bins": np.concatenate(targets),
+        "valid": np.concatenate(valid),
+    }
+
+
 def neighborhood_softmax_figure(
     collected: Mapping[str, np.ndarray],
     anchor_index: int,
@@ -261,6 +297,111 @@ def collect_expert_pairs(
     if not pairs:
         raise ValueError("the loader produced no valid expert pairs")
     return np.concatenate(pairs)
+
+
+@torch.no_grad()
+def collect_generated_pairs(
+    head,
+    backbone,
+    loader: Iterable[Mapping[str, object]],
+    stats,
+    tokenizer,
+    device: torch.device | str,
+    dims: tuple[int, int] = (4, 5),
+    timestep: int = 0,
+    max_batches: int | None = None,
+    strategy: str = "sample",
+    temperature: float = 1.0,
+) -> np.ndarray:
+    """Collect deployed bin pairs across held-out observations.
+
+    Unlike a teacher-forced outer product, this follows each head's real
+    generation path.  In particular, the autoregressive second cell is
+    conditioned on the model's own earlier sampled cells.
+    """
+    from ch04.decoding import action_head_bins
+
+    pairs = []
+    first, second = dims
+    with evaluation_mode(head), evaluation_mode(backbone):
+        for batch in _batches(loader, max_batches):
+            model_inputs = prepare_batch(batch, stats, device, backbone)
+            bins, pad = action_targets(batch, stats, tokenizer, device)
+            predicted = action_head_bins(
+                head,
+                backbone,
+                model_inputs,
+                strategy=strategy,
+                temperature=temperature,
+            )
+            if not 0 <= timestep < predicted.shape[1]:
+                raise IndexError("timestep is outside the action horizon")
+            controls = predicted.shape[2]
+            if not 0 <= first < controls or not 0 <= second < controls:
+                raise IndexError("control is outside the action grid")
+            keep = ~pad[:, timestep, first] & ~pad[:, timestep, second]
+            if bool(keep.any()):
+                pairs.append(
+                    predicted[keep, timestep][:, [first, second]]
+                    .cpu()
+                    .numpy()
+                )
+    if not pairs:
+        raise ValueError("the loader produced no valid generated pairs")
+    return np.concatenate(pairs)
+
+
+def select_pair_mode_support(
+    expert_pairs: np.ndarray,
+    minimum_group_fraction: float = 0.15,
+    minimum_support_fraction: float = 0.05,
+) -> dict[str, object]:
+    """Derive two per-control modes and supported quadrants from experts.
+
+    The split for each control is the largest central gap, excluding tiny
+    edge groups.  A quadrant is supported when at least
+    ``minimum_support_fraction`` of expert pairs occupy it; if that leaves
+    fewer than two quadrants, the two most common are retained.  The result
+    replaces the unrelated fixed bin-128 threshold used by the first draft.
+    """
+    pairs = np.asarray(expert_pairs, dtype=np.float64)
+    if pairs.ndim != 2 or pairs.shape[1] != 2 or pairs.shape[0] < 8:
+        raise ValueError("expert_pairs must have shape [N >= 8, 2]")
+    if not 0.0 < minimum_group_fraction < 0.5:
+        raise ValueError("minimum_group_fraction must lie in (0, 0.5)")
+    if not 0.0 <= minimum_support_fraction < 0.5:
+        raise ValueError("minimum_support_fraction must lie in [0, 0.5)")
+
+    splits = []
+    peaks = []
+    minimum_group = max(
+        2, int(np.ceil(minimum_group_fraction * len(pairs)))
+    )
+    for column in range(2):
+        ordered = np.sort(pairs[:, column])
+        eligible = np.arange(
+            minimum_group - 1, len(ordered) - minimum_group
+        )
+        split_index = int(eligible[np.argmax(np.diff(ordered)[eligible])])
+        left = ordered[: split_index + 1]
+        right = ordered[split_index + 1 :]
+        splits.append(float((left[-1] + right[0]) / 2.0))
+        peaks.append((float(np.median(left)), float(np.median(right))))
+
+    high_x = pairs[:, 0] >= splits[0]
+    high_y = pairs[:, 1] >= splits[1]
+    quadrant_index = high_x.astype(int) * 2 + high_y.astype(int)
+    fractions = np.bincount(quadrant_index, minlength=4) / len(pairs)
+    supported = fractions >= minimum_support_fraction
+    if int(supported.sum()) < 2:
+        supported[np.argsort(fractions)[-2:]] = True
+    return {
+        "splits": tuple(splits),
+        "peaks": tuple(peaks),
+        "expert_quadrant_fraction": fractions,
+        "supported_quadrants": supported,
+        "examples": int(len(pairs)),
+    }
 
 
 @torch.no_grad()
@@ -519,6 +660,7 @@ def open_loop_episode_trace(
 def select_representative_open_loop_window(
     trace: Mapping[str, np.ndarray],
     max_steps: int = 180,
+    scale: np.ndarray | None = None,
 ) -> dict[str, np.ndarray | int | float]:
     """Choose one contiguous, high-motion held-out episode window.
 
@@ -547,6 +689,14 @@ def select_representative_open_loop_window(
     if max_steps < 2:
         raise ValueError("max_steps must be at least two")
 
+    if scale is None:
+        motion_scale = np.ones(expert.shape[1], dtype=np.float64)
+    else:
+        motion_scale = np.asarray(scale, dtype=np.float64).reshape(-1)
+        if motion_scale.shape != (expert.shape[1],):
+            raise ValueError("scale must contain one value per control")
+        motion_scale = np.maximum(np.abs(motion_scale), 1e-8)
+
     best = None
     for episode in np.unique(episodes[valid]):
         indices = np.flatnonzero(valid & (episodes == episode))
@@ -555,7 +705,9 @@ def select_representative_open_loop_window(
         for run in np.split(indices, discontinuities):
             if run.size < 2:
                 continue
-            motion = np.abs(np.diff(expert[run], axis=0)).mean(axis=1)
+            motion = np.abs(
+                np.diff(expert[run], axis=0) / motion_scale
+            ).mean(axis=1)
             window = min(max_steps, run.size)
             if run.size > window:
                 # First point has no preceding difference, hence window - 1.
@@ -567,7 +719,9 @@ def select_representative_open_loop_window(
                 start = 0
             chosen = run[start : start + window]
             score = float(
-                np.abs(np.diff(expert[chosen], axis=0)).mean()
+                np.abs(
+                    np.diff(expert[chosen], axis=0) / motion_scale
+                ).mean()
             )
             record = {
                 "indices": chosen,
@@ -744,6 +898,13 @@ def measure_inference_latency(
         def synchronize():
             return None
 
+    if device.type == "cuda":
+        device_label = torch.cuda.get_device_name(device)
+    elif device.type == "mps":
+        device_label = "Apple Metal Performance Shaders"
+    else:
+        device_label = str(device)
+
     measured: dict[str, dict[str, float]] = {}
     for name, head in heads.items():
         def run(head=head):
@@ -771,6 +932,6 @@ def measure_inference_latency(
             "serial_steps": int(getattr(head, "grid", 1))
             if hasattr(head, "generate")
             else 1,
-            "device": device.type,
+            "device": device_label,
         }
     return measured

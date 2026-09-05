@@ -1,4 +1,4 @@
-"""Bidirectional parallel action decoder from manuscript listing 4.5."""
+"""Bidirectional parallel action decoder from manuscript listing 4.3."""
 
 import torch
 import torch.nn as nn
@@ -15,11 +15,10 @@ from ch04.constants import (
 class ParallelDecodeActionHead(nn.Module):
     """Decode one vector-valued action position per future timestep.
 
-    The manuscript's listing 4.5 prints ``H x D`` slots, but its prose,
-    section 4.8.1, and the chapter summary all specify SmolVLA's
-    granularity: ``H`` positions, one per future timestep, each reading
-    out the complete control vector. This implementation follows the
-    prose and returns ``[B, H, D, bins]``.
+    The head uses ``H`` positions, one per future timestep, and each
+    position reads out the complete control vector. It therefore returns
+    ``[B, H, D, bins]`` while keeping the bidirectional suffix length at
+    16 positions for the shipped configuration.
 
     Constructing the head switches the *shared* backbone to eager
     attention. That is a deliberate side effect: eager is the only

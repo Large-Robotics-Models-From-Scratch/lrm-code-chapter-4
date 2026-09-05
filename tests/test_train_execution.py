@@ -558,6 +558,9 @@ def test_held_out_metrics_rolls_out_the_autoregressive_head(
     assert calls["teacher_forced"] == 2
     assert calls["generate"] == 2
     assert 0.0 <= metrics["accuracy"] <= 1.0
+    assert 0.0 <= metrics["teacher_forced_accuracy"] <= 1.0
+    assert metrics["teacher_forced_token_count"] > 0
+    assert metrics["rollout_token_count"] > 0
     assert metrics["mae_in_std"] > 0
     assert metrics["rollout_batches_used"] == 2
 
@@ -583,6 +586,10 @@ def test_held_out_metrics_can_bound_expensive_rollouts(
     )
     assert calls["n"] == 2
     assert metrics["rollout_batches_used"] == 2
+    assert (
+        metrics["teacher_forced_token_count"]
+        > metrics["rollout_token_count"]
+    )
 
 
 def test_held_out_metrics_unchanged_for_one_pass_heads(

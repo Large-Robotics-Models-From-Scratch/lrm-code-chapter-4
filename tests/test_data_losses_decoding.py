@@ -192,6 +192,9 @@ def test_top_p_keeps_threshold_crossing_token():
 def test_select_bins_defaults_to_argmax():
     logits = torch.tensor([[[0.0, 2.0, 1.0]]])
     assert select_bins(logits).item() == 1
+    assert select_bins(
+        logits, strategy="sample", top_p=0.1
+    ).item() == 1
     with pytest.raises(ValueError, match="unknown strategy"):
         select_bins(logits, strategy="median")
 

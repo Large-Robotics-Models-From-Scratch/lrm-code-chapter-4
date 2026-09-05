@@ -63,14 +63,13 @@ def select_bins(
     logits: torch.Tensor,
     strategy: str = "argmax",
     temperature: float = 1.0,
+    top_p: float = 1.0,
 ) -> torch.Tensor:
     """Select one bin per cell using manuscript listing 4.10."""
     if strategy == "argmax":
         return logits.argmax(dim=-1)
     if strategy == "sample":
-        if temperature <= 0:
-            raise ValueError("temperature must be positive")
-        probabilities = (logits.float() / temperature).softmax(-1)
+        probabilities = nucleus_probabilities(logits, temperature, top_p)
         flat = probabilities.reshape(-1, probabilities.shape[-1])
         return torch.multinomial(flat, 1).view(logits.shape[:-1])
     raise ValueError(f"unknown strategy: {strategy}")

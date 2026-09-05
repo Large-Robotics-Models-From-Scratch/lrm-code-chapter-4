@@ -27,7 +27,7 @@ from ch04.constants import (
 from ch04.factorized_action_head import FactorizedActionHead
 from ch04.parallel_action_head import ParallelDecodeActionHead
 
-HEAD_NAMES = ("factorized", "autoregressive", "parallel")
+HEAD_NAMES = ("factorized", "parallel", "autoregressive")
 
 
 def resolve_device(name: str | None = None) -> torch.device:
@@ -184,6 +184,10 @@ def _train_one_head(
         "wall_clock_s": round(elapsed, 1),
         "interrupted": interrupted,
         "validation_token_ce": validation["loss"],
+        "validation_teacher_forced_accuracy": validation[
+            "teacher_forced_accuracy"
+        ],
+        "validation_rollout_accuracy": validation["accuracy"],
         "validation_token_accuracy": validation["accuracy"],
         "validation_accuracy_by_control": validation[
             "accuracy_by_control"

@@ -274,12 +274,13 @@ def held_out_metrics(
 ) -> dict[str, object]:
     """Loss, token accuracy, and decoded MAE on held-out episodes.
 
-    Cross-entropy is teacher-forced, which is the objective training
-    optimizes. The decoded metrics are not: they score the grid each head
+    Cross-entropy and the explicitly named ``teacher_forced_*`` metrics use
+    expert prefixes, matching the training objective. The short
+    ``accuracy`` and ``mae_in_std`` aliases instead score the grid each head
     actually generates, so the autoregressive head is rolled out through
-    its own earlier choices rather than handed the expert prefix. Scoring
-    teacher-forced argmax as open-loop error understates it badly and makes
-    it incomparable with the one-pass heads, which get no such conditioning.
+    its own earlier choices rather than handed the expert prefix. Keeping
+    both scopes prevents a one-minibatch training number from being compared
+    with a small deployment-rollout validation slice.
 
     ``max_batches`` bounds the evaluation. The SO-101 split holds roughly
     1,200 held-out frames, so an unbounded pass costs one backbone forward
@@ -305,9 +306,14 @@ def held_out_metrics(
     backbone.eval()
     loss_sum = 0.0
     valid_count = 0
-    correct = None
-    mae_std = None
-    mae_raw = None
+    teacher_correct = None
+    teacher_mae_std = None
+    teacher_mae_raw = None
+    teacher_counts = None
+    rollout_correct = None
+    rollout_mae_std = None
+    rollout_mae_raw = None
+    rollout_counts = None
     rollout_used = 0
     try:
         for index, batch in enumerate(loader):
@@ -330,6 +336,39 @@ def held_out_metrics(
             count = int(keep.sum())
             loss_sum += float(loss) * count
             valid_count += count
+
+            teacher_metrics = action_metrics(
+                logits,
+                bins,
+                pad,
+                batch["action"],
+                stats,
+                tokenizer,
+            )
+            control_counts = keep.sum(dim=(0, 1)).cpu().double()
+            batch_teacher_correct = (
+                torch.tensor(teacher_metrics["accuracy_by_control"])
+                * control_counts
+            )
+            batch_teacher_mae_std = (
+                torch.tensor(teacher_metrics["mae_in_std_by_control"])
+                * control_counts
+            )
+            batch_teacher_mae_raw = (
+                torch.tensor(teacher_metrics["mae_raw_by_control"])
+                * control_counts
+            )
+            if teacher_correct is None:
+                teacher_correct = batch_teacher_correct
+                teacher_mae_std = batch_teacher_mae_std
+                teacher_mae_raw = batch_teacher_mae_raw
+                teacher_counts = control_counts.clone()
+            else:
+                teacher_correct += batch_teacher_correct
+                teacher_mae_std += batch_teacher_mae_std
+                teacher_mae_raw += batch_teacher_mae_raw
+                teacher_counts += control_counts
+
             if (
                 rollout_batches is not None
                 and rollout_used >= rollout_batches
@@ -353,7 +392,6 @@ def held_out_metrics(
                 tokenizer,
                 predicted_bins=predicted,
             )
-            control_counts = keep.sum(dim=(0, 1)).cpu().double()
             batch_correct = (
                 torch.tensor(metrics["accuracy_by_control"])
                 * control_counts
@@ -366,16 +404,16 @@ def held_out_metrics(
                 torch.tensor(metrics["mae_raw_by_control"])
                 * control_counts
             )
-            if correct is None:
-                correct = batch_correct
-                mae_std = batch_mae_std
-                mae_raw = batch_mae_raw
-                counts_by_control = control_counts
+            if rollout_correct is None:
+                rollout_correct = batch_correct
+                rollout_mae_std = batch_mae_std
+                rollout_mae_raw = batch_mae_raw
+                rollout_counts = control_counts.clone()
             else:
-                correct += batch_correct
-                mae_std += batch_mae_std
-                mae_raw += batch_mae_raw
-                counts_by_control += control_counts
+                rollout_correct += batch_correct
+                rollout_mae_std += batch_mae_std
+                rollout_mae_raw += batch_mae_raw
+                rollout_counts += control_counts
     finally:
         for module, training in modes:
             module.training = training
@@ -383,28 +421,61 @@ def held_out_metrics(
         raise ValueError(
             "validation loader produced no valid action tokens"
         )
-    if correct is None:
+    teacher_accuracy_by_control = (
+        teacher_correct / teacher_counts
+    ).tolist()
+    teacher_mae_std_by_control = (
+        teacher_mae_std / teacher_counts
+    ).tolist()
+    teacher_mae_raw_by_control = (
+        teacher_mae_raw / teacher_counts
+    ).tolist()
+    result = {
+        "loss": loss_sum / valid_count,
+        "teacher_forced_accuracy": float(
+            teacher_correct.sum() / teacher_counts.sum()
+        ),
+        "teacher_forced_accuracy_by_control": (
+            teacher_accuracy_by_control
+        ),
+        "teacher_forced_mae_in_std": float(
+            teacher_mae_std.sum() / teacher_counts.sum()
+        ),
+        "teacher_forced_mae_in_std_by_control": (
+            teacher_mae_std_by_control
+        ),
+        "teacher_forced_mae_raw_by_control": (
+            teacher_mae_raw_by_control
+        ),
+        "teacher_forced_token_count": int(teacher_counts.sum()),
+        "rollout_batches_used": rollout_used,
+    }
+    if rollout_correct is None:
         if rollout_batches != 0:
             raise ValueError(
                 "rollout_batches excluded every batch, so no decoded "
                 "metric could be computed"
             )
-        return {
-            "loss": loss_sum / valid_count,
-            "rollout_batches_used": 0,
-        }
-    accuracy_by_control = (correct / counts_by_control).tolist()
-    mae_std_by_control = (mae_std / counts_by_control).tolist()
-    mae_raw_by_control = (mae_raw / counts_by_control).tolist()
-    return {
-        "loss": loss_sum / valid_count,
-        "accuracy": float(correct.sum() / counts_by_control.sum()),
+        return result
+    accuracy_by_control = (rollout_correct / rollout_counts).tolist()
+    mae_std_by_control = (rollout_mae_std / rollout_counts).tolist()
+    mae_raw_by_control = (rollout_mae_raw / rollout_counts).tolist()
+    # The short names remain deployment aliases for CLI compatibility.
+    # Callers that compare train and validation curves should use the
+    # explicit teacher_forced_* fields above.
+    result.update({
+        "accuracy": float(
+            rollout_correct.sum() / rollout_counts.sum()
+        ),
         "accuracy_by_control": accuracy_by_control,
-        "mae_in_std": float(mae_std.sum() / counts_by_control.sum()),
+        "mae_in_std": float(
+            rollout_mae_std.sum() / rollout_counts.sum()
+        ),
         "mae_in_std_by_control": mae_std_by_control,
         "mae_raw_by_control": mae_raw_by_control,
-        "rollout_batches_used": rollout_used,
-    }
+        "rollout_token_count": int(rollout_counts.sum()),
+    })
+    return result
 
 
 @torch.no_grad()
@@ -708,6 +779,8 @@ def train_action_head(
                     "mae_in_std": metrics["mae_in_std"],
                     "validation_accuracy": float("nan"),
                     "validation_mae_in_std": float("nan"),
+                    "validation_rollout_accuracy": float("nan"),
+                    "validation_rollout_mae_in_std": float("nan"),
                 }
                 for index in range(len(metrics["accuracy_by_control"])):
                     record[f"accuracy_dim_{index}"] = metrics[
@@ -742,21 +815,33 @@ def train_action_head(
                 if history:
                     history[-1]["validation_loss"] = validation
                     history[-1]["validation_accuracy"] = (
-                        validation_metrics["accuracy"]
+                        validation_metrics["teacher_forced_accuracy"]
                     )
                     history[-1]["validation_mae_in_std"] = (
-                        validation_metrics["mae_in_std"]
+                        validation_metrics["teacher_forced_mae_in_std"]
+                    )
+                    history[-1]["validation_rollout_accuracy"] = (
+                        validation_metrics.get("accuracy", float("nan"))
+                    )
+                    history[-1]["validation_rollout_mae_in_std"] = (
+                        validation_metrics.get(
+                            "mae_in_std", float("nan")
+                        )
                     )
                     for index in range(
-                        len(validation_metrics["accuracy_by_control"])
+                        len(validation_metrics[
+                            "teacher_forced_accuracy_by_control"
+                        ])
                     ):
                         history[-1][
                             f"validation_accuracy_dim_{index}"
-                        ] = validation_metrics["accuracy_by_control"][index]
+                        ] = validation_metrics[
+                            "teacher_forced_accuracy_by_control"
+                        ][index]
                         history[-1][
                             f"validation_mae_in_std_dim_{index}"
                         ] = validation_metrics[
-                            "mae_in_std_by_control"
+                            "teacher_forced_mae_in_std_by_control"
                         ][index]
                 head.train()
                 backbone.train()
@@ -804,36 +889,61 @@ def train_action_head(
                 )
                 writer.add_scalar(
                     "accuracy/held_out",
-                    validation_metrics["accuracy"],
+                    validation_metrics["teacher_forced_accuracy"],
                     completed_step,
                 )
                 writer.add_scalar(
+                    "accuracy/held_out_teacher_forced",
+                    validation_metrics["teacher_forced_accuracy"],
+                    completed_step,
+                )
+                if "accuracy" in validation_metrics:
+                    writer.add_scalar(
+                        "accuracy/held_out_rollout",
+                        validation_metrics["accuracy"],
+                        completed_step,
+                    )
+                writer.add_scalar(
                     "mae_in_std/held_out",
-                    validation_metrics["mae_in_std"],
+                    validation_metrics["teacher_forced_mae_in_std"],
                     completed_step,
                 )
                 for index in range(getattr(head, "action_dim", 0)):
                     writer.add_scalar(
                         f"accuracy_by_control/held_out_{index}",
-                        validation_metrics["accuracy_by_control"][index],
+                        validation_metrics[
+                            "teacher_forced_accuracy_by_control"
+                        ][index],
                         completed_step,
                     )
                     writer.add_scalar(
                         f"mae_in_std_by_control/held_out_{index}",
-                        validation_metrics["mae_in_std_by_control"][index],
+                        validation_metrics[
+                            "teacher_forced_mae_in_std_by_control"
+                        ][index],
                         completed_step,
                     )
             if log_now:
                 message = (
                     f"[{completed_step:6d}] loss={history[-1]['loss']:.3f} "
-                    f"acc={history[-1]['accuracy']:.1%} "
-                    f"mae/std={history[-1]['mae_in_std']:.3f}"
+                    f"train_batch_tf_acc={history[-1]['accuracy']:.1%} "
+                    f"train_batch_tf_mae/std="
+                    f"{history[-1]['mae_in_std']:.3f}"
                 )
                 if validation is not None:
                     message += (
-                        f" val={validation:.3f} "
-                        f"val_acc={validation_metrics['accuracy']:.1%}"
+                        f" val_tf_ce={validation:.3f} "
+                        f"val_tf_acc="
+                        f"{validation_metrics['teacher_forced_accuracy']:.1%}"
                     )
+                    if "accuracy" in validation_metrics:
+                        message += (
+                            f" val_rollout_acc="
+                            f"{validation_metrics['accuracy']:.1%} "
+                            "(n="
+                            f"{validation_metrics['rollout_token_count']} "
+                            "tokens)"
+                        )
                 print(message)
             if should_checkpoint:
                 best_updated = (

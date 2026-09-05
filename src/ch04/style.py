@@ -14,30 +14,30 @@ from __future__ import annotations
 # the three separable in grayscale print.
 HEAD_STYLES: dict[str, dict[str, object]] = {
     "factorized": {
-        "color": "#4C72B0",
+        "color": "#1F77B4",
         "linestyle": "--",
         "marker": "o",
         "label": "factorized (one-shot)",
     },
-    "autoregressive": {
-        "color": "#DD8452",
-        "linestyle": "-.",
-        "marker": "s",
-        "label": "autoregressive",
-    },
     "parallel": {
-        "color": "#55A868",
+        "color": "#FF7F0E",
         "linestyle": "-",
         "marker": "^",
         "label": "parallel (bidirectional)",
     },
+    "autoregressive": {
+        "color": "#2CA02C",
+        "linestyle": "-.",
+        "marker": "s",
+        "label": "autoregressive",
+    },
 }
 
-EXPERT_COLOR = "#33333A"
-POLICY_COLOR = "#C44E52"
-SUPPORTED_COLOR = "#4C72B0"
-UNSUPPORTED_COLOR = "#C44E52"
-NEUTRAL_COLOR = "#8C8C94"
+EXPERT_COLOR = "#1F77B4"
+POLICY_COLOR = "#FF7F0E"
+SUPPORTED_COLOR = "#2CA02C"
+UNSUPPORTED_COLOR = "#D62728"
+NEUTRAL_COLOR = "#7F7F7F"
 GRID_COLOR = "#D9D9DE"
 
 
@@ -77,6 +77,11 @@ def use_manuscript_style() -> None:
             "savefig.bbox": "tight",
             "figure.facecolor": "white",
             "axes.facecolor": "white",
+            # Verdana is the manuscript typeface. DejaVu Sans is a
+            # deterministic fallback for stock Colab runtimes, where the
+            # proprietary Verdana files are usually unavailable.
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Verdana", "DejaVu Sans"],
             "font.size": 10,
             "axes.titlesize": 11,
             "axes.titleweight": "bold",
