@@ -828,6 +828,69 @@ def plot_open_loop_episode(
     return figure
 
 
+def plot_open_loop_offset_errors(
+    errors_by_head: dict,
+    joint_names=None,
+):
+    """Plot normalized open-loop error by chunk offset and control.
+
+    Each value is MAE divided by that control's training-set standard
+    deviation.  A shared color scale makes the three heads comparable.
+    """
+    import matplotlib.pyplot as plt
+
+    if not errors_by_head:
+        raise ValueError("errors_by_head must contain at least one head")
+    names = list(errors_by_head)
+    arrays = {name: np.asarray(errors_by_head[name], dtype=float)
+              for name in names}
+    first = arrays[names[0]]
+    if first.ndim != 2:
+        raise ValueError("each error matrix must have shape [H, D]")
+    if any(values.shape != first.shape for values in arrays.values()):
+        raise ValueError("all error matrices must have the same shape")
+    labels = list(
+        joint_names or [f"control {i}" for i in range(first.shape[1])]
+    )
+    if len(labels) != first.shape[1]:
+        raise ValueError("joint_names must contain one label per control")
+    finite = np.concatenate([
+        values[np.isfinite(values)] for values in arrays.values()
+    ])
+    vmax = float(np.percentile(finite, 95)) if finite.size else 1.0
+    vmax = max(vmax, 1e-6)
+    figure, axes = plt.subplots(
+        1, len(names), figsize=(4.0 * len(names) + 0.7, 3.6),
+        squeeze=False, sharex=True, sharey=True,
+    )
+    image = None
+    for axis, name in zip(axes[0], names, strict=True):
+        image = axis.imshow(
+            arrays[name].T,
+            origin="lower",
+            aspect="auto",
+            interpolation="nearest",
+            cmap="magma",
+            vmin=0.0,
+            vmax=vmax,
+        )
+        axis.set(
+            xlabel="prediction offset",
+            title=head_label(name),
+            yticks=np.arange(first.shape[1]),
+            yticklabels=[label.replace(".pos", "") for label in labels],
+        )
+        axis.title.set_color(head_color(name))
+        axis.grid(False)
+    axes[0][0].set_ylabel("control")
+    figure.suptitle("Held-out open-loop MAE / training standard deviation")
+    bar = figure.colorbar(
+        image, ax=axes[0].tolist(), fraction=0.025, pad=0.02
+    )
+    bar.set_label("MAE / training std", fontsize=9)
+    return figure
+
+
 def plot_training_curves(histories: dict, log_scale: bool = False):
     """Training/held-out cross-entropy and overall token accuracy.
 
@@ -1065,4 +1128,110 @@ def plot_head_comparison(summary: dict, metrics: dict | None = None):
         axis.margins(y=0.18)
         axis.tick_params(axis="x", rotation=12)
         axis.grid(axis="x", visible=False)
+    return figure
+
+
+def plot_quality_compute_tradeoff(
+    summary: dict,
+    decode_steps: dict | None = None,
+    quality_key: str = "mae_std",
+    flops: dict | None = None,
+    latency: dict | None = None,
+):
+    """Pareto-style quality versus inference cost per head.
+
+    The x-axis prefers ``latency`` from
+    :func:`ch04.analysis.measure_inference_latency`, then ``flops``, then an
+    implementation-independent schedule proxy. Prefer latency: a FLOP count
+    is blind to the dependency graph and is dominated by the shared
+    observation prefill, so it compresses the autoregressive head's measured
+    17x GPU latency penalty into 1.11x the arithmetic. Every point is
+    annotated with its serial decode depth.
+    """
+    import matplotlib.pyplot as plt
+
+    if not summary:
+        raise ValueError("summary must contain at least one head")
+    decode_steps = decode_steps or {
+        "factorized": 1,
+        "parallel": 1,
+        "autoregressive": 96,
+    }
+    if latency:
+        cost = {
+            name: values["latency_ms"] for name, values in latency.items()
+        }
+    elif flops:
+        cost = {name: values["flops"] for name, values in flops.items()}
+    else:
+        cost = decode_steps
+    depth = latency or flops
+    missing = [
+        name for name, values in summary.items()
+        if quality_key not in values or name not in cost
+    ]
+    if missing:
+        raise KeyError(f"missing quality or inference cost for {missing}")
+    points = [
+        (name, float(cost[name]), float(summary[name][quality_key]))
+        for name in summary
+    ]
+    if any(x <= 0 or not np.isfinite([x, y]).all()
+           for _, x, y in points):
+        raise ValueError("trade-off values must be positive and finite")
+
+    figure, axis = plt.subplots(figsize=(7.2, 4.2))
+    for name, x, y in points:
+        axis.scatter(
+            x, y, s=90, color=head_color(name), zorder=3,
+            label=head_label(name),
+        )
+        caption = head_label(name).split(" (")[0]
+        if depth:
+            steps = int(depth[name]["serial_steps"])
+            plural = "" if steps == 1 else "s"
+            caption += f"\n{steps} serial step{plural}"
+        axis.annotate(
+            caption,
+            xy=(x, y), xytext=(6, 6), textcoords="offset points",
+            fontsize=8.5,
+        )
+
+    frontier = []
+    best_quality = float("inf")
+    for name, x, y in sorted(points, key=lambda item: (item[1], item[2])):
+        if y < best_quality:
+            frontier.append((x, y))
+            best_quality = y
+    if len(frontier) > 1:
+        axis.plot(
+            [point[0] for point in frontier],
+            [point[1] for point in frontier],
+            color=SUPPORTED_COLOR, lw=1.2, ls="--",
+            label="non-dominated frontier",
+        )
+    axis.set_xscale("log", base=2)
+    axis.set(
+        xlabel=(
+            "measured inference latency per example (ms)"
+            if latency
+            else "measured inference FLOPs per example"
+            if flops
+            else "serial prediction steps (decode-schedule proxy)"
+        ),
+        ylabel="open-loop MAE / training std (lower is better)",
+        title="Quality–compute trade-off for the three discrete heads",
+    )
+    axis.legend(loc="best")
+    annotate_source(
+        axis.figure,
+        "Measured on "
+        f"{next(iter(latency.values())).get('device', 'the target device')}"
+        "; latency is device-specific."
+        if latency
+        else "FLOPs are measured but the shared prefill dominates them, "
+        "so they understate serial decoding. Depth tracks latency."
+        if flops
+        else "Decode steps are a proxy, not measured FLOPs or latency.",
+    )
     return figure

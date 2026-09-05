@@ -195,6 +195,7 @@ def action_metrics(
     raw_actions,
     stats,
     tokenizer,
+    predicted_bins: torch.Tensor | None = None,
 ) -> dict[str, object]:
     """Token accuracy and decoded MAE, overall and per control.
 
@@ -202,6 +203,12 @@ def action_metrics(
     actions after Chapter 2 z-score normalization. A value of 1.0 means
     one training-set standard deviation. ``mae_raw`` inverts that
     normalization and is reported in the dataset's native joint units.
+
+    Pass ``predicted_bins`` to score a grid the head actually generated.
+    Without it the bins are taken from ``logits``, which for the
+    autoregressive head are teacher-forced: every cell would be scored with
+    the true earlier bins supplied, collapsing its decoded error toward the
+    quantization floor instead of measuring open-loop error.
     """
     if (
         logits.shape[:-1] != target_bins.shape
@@ -211,7 +218,14 @@ def action_metrics(
     keep = ~pad
     if not bool(keep.any()):
         raise ValueError("the batch contains no valid action tokens")
-    predictions = logits.argmax(dim=-1)
+    if predicted_bins is None:
+        predictions = logits.argmax(dim=-1)
+    else:
+        if predicted_bins.shape != target_bins.shape:
+            raise ValueError(
+                "predicted_bins must match the target grid shape"
+            )
+        predictions = predicted_bins
     correct = (predictions == target_bins) & keep
     counts = keep.sum(dim=(0, 1))
     accuracy_by_control = correct.sum(dim=(0, 1)).float() / counts
@@ -256,14 +270,30 @@ def held_out_metrics(
     device: torch.device | str,
     label_smoothing: float = 0.05,
     max_batches: int | None = None,
+    rollout_batches: int | None = None,
 ) -> dict[str, object]:
     """Loss, token accuracy, and decoded MAE on held-out episodes.
+
+    Cross-entropy is teacher-forced, which is the objective training
+    optimizes. The decoded metrics are not: they score the grid each head
+    actually generates, so the autoregressive head is rolled out through
+    its own earlier choices rather than handed the expert prefix. Scoring
+    teacher-forced argmax as open-loop error understates it badly and makes
+    it incomparable with the one-pass heads, which get no such conditioning.
 
     ``max_batches`` bounds the evaluation. The SO-101 split holds roughly
     1,200 held-out frames, so an unbounded pass costs one backbone forward
     per frame every time a checkpoint is written. Bounding it keeps the
     validation signal cheap enough to run often; leave it ``None`` for the
     exact dataset-level number.
+
+    ``rollout_batches`` bounds the decoded metrics separately, because an
+    autoregressive rollout costs ``H * D`` serial steps per batch and is
+    far more expensive than the teacher-forced pass. The returned
+    ``rollout_batches_used`` records how many batches it covered, so a
+    bounded decoded metric is never mistaken for a full-split one. Pass
+    ``0`` to skip decoding entirely and pay only for the loss, which is
+    what :func:`held_out_loss` needs.
     """
     modules = {
         id(module): module
@@ -278,6 +308,7 @@ def held_out_metrics(
     correct = None
     mae_std = None
     mae_raw = None
+    rollout_used = 0
     try:
         for index, batch in enumerate(loader):
             if max_batches is not None and index >= max_batches:
@@ -299,6 +330,20 @@ def held_out_metrics(
             count = int(keep.sum())
             loss_sum += float(loss) * count
             valid_count += count
+            if (
+                rollout_batches is not None
+                and rollout_used >= rollout_batches
+            ):
+                continue
+            # Score what the head would actually emit at deployment: the
+            # AR head generates through its own choices, the one-pass
+            # heads simply argmax their logits as before.
+            from ch04.decoding import action_head_bins
+
+            predicted = action_head_bins(
+                head, backbone, model_inputs, strategy="argmax"
+            )
+            rollout_used += 1
             metrics = action_metrics(
                 logits,
                 bins,
@@ -306,6 +351,7 @@ def held_out_metrics(
                 batch["action"],
                 stats,
                 tokenizer,
+                predicted_bins=predicted,
             )
             control_counts = keep.sum(dim=(0, 1)).cpu().double()
             batch_correct = (
@@ -337,6 +383,16 @@ def held_out_metrics(
         raise ValueError(
             "validation loader produced no valid action tokens"
         )
+    if correct is None:
+        if rollout_batches != 0:
+            raise ValueError(
+                "rollout_batches excluded every batch, so no decoded "
+                "metric could be computed"
+            )
+        return {
+            "loss": loss_sum / valid_count,
+            "rollout_batches_used": 0,
+        }
     accuracy_by_control = (correct / counts_by_control).tolist()
     mae_std_by_control = (mae_std / counts_by_control).tolist()
     mae_raw_by_control = (mae_raw / counts_by_control).tolist()
@@ -347,6 +403,7 @@ def held_out_metrics(
         "mae_in_std": float(mae_std.sum() / counts_by_control.sum()),
         "mae_in_std_by_control": mae_std_by_control,
         "mae_raw_by_control": mae_raw_by_control,
+        "rollout_batches_used": rollout_used,
     }
 
 
@@ -372,6 +429,7 @@ def held_out_loss(
             device,
             label_smoothing,
             max_batches,
+            rollout_batches=0,
         )["loss"]
     )
 
@@ -456,6 +514,7 @@ def train_action_head(
     snapshot_steps: tuple[int, ...] = (),
     validate_every: int | None = None,
     validation_batches: int | None = 32,
+    validation_rollout_batches: int | None = 8,
     tensorboard_log_dir: str | Path | None = None,
 ) -> list[dict[str, float]]:
     """Train a factorized, autoregressive, or parallel action head.
@@ -677,6 +736,7 @@ def train_action_head(
                     device,
                     label_smoothing,
                     validation_batches,
+                    rollout_batches=validation_rollout_batches,
                 )
                 validation = float(validation_metrics["loss"])
                 if history:

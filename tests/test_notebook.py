@@ -168,6 +168,9 @@ def test_run_configuration_precedes_the_trainers():
         "GRID_SAMPLES",
         "AR_GRID_SAMPLES",
         "EVAL_BATCHES",
+        "PLOT_BATCHES",
+        "N_NEIGHBORS",
+        "OPEN_LOOP_STEPS",
         "WARMUP_STEPS",
         "LOG_EVERY",
         "CHECKPOINT_EVERY",
@@ -189,6 +192,8 @@ def test_colab_produces_every_code_backed_figure():
         "section 4.6.2": "plot_temporal_traces",
         "figure 4.10": "plot_execution_schedules",
         "figure 4.11": "plot_open_loop_episode",
+        "section 4.6 trade-off": "plot_quality_compute_tradeoff",
+        "section 4.7 offset errors": "plot_open_loop_offset_errors",
     }
     missing = [
         figure for figure, symbol in required.items()
@@ -197,12 +202,14 @@ def test_colab_produces_every_code_backed_figure():
     assert not missing, f"the Colab never produces {missing}"
 
 
-def test_figure_411_reports_every_trained_head_separately():
+def test_figure_411_uses_representative_episode_and_compares_all_heads():
     code = _notebook_code()
     assert "for name in HEAD_NAMES:" in code
     assert "open_loop_traces[name] = trace" in code
-    assert "head_name=name" in code
-    assert "figure_4_11_open_loop_episode.png" in code
+    assert "select_representative_open_loop_window" in code
+    assert "head_name='autoregressive'" in code
+    assert "figure_4_11_representative_open_loop_episode.png" in code
+    assert "plot_open_loop_offset_errors" in code
     assert "open_loop_metrics" in code
     assert "mae_in_standard_deviations" in code
 
@@ -211,6 +218,10 @@ def test_colab_records_the_provenance_section_461_requires():
     code = _notebook_code()
     for token in ("ANCHOR_INDEX", "N_NEIGHBORS", "SEED", "set_seed"):
         assert token in code
+    assert "select_bimodal_anchor" in code
+    assert "select_coupled_control_pair" in code
+    assert "ANCHOR_INDEX = 0" not in code
+    assert "PAIR_DIMS, TIMESTEP = 0, (4, 5), 0" not in code
 
 
 def test_colab_has_fixed_sanity_and_full_training_modes():

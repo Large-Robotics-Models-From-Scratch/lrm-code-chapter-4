@@ -513,3 +513,122 @@ def test_execute_chunk_preserves_order():
     chunk = torch.arange(12).reshape(3, 4)
     controls = list(execute_chunk(chunk))
     assert torch.equal(torch.stack(controls), chunk)
+
+
+# --- held-out metrics must roll out, not teacher-force -------------------
+
+
+def _eval_loader(n_batches=3):
+    return [_batch() for _ in range(n_batches)]
+
+
+def test_held_out_metrics_rolls_out_the_autoregressive_head(
+    fake_backbone, fake_stats
+):
+    """Decoded metrics must come from generation, not the expert prefix.
+
+    Teacher forcing hands the head every earlier ground-truth bin, so its
+    decoded error collapses toward the quantization floor and is not the
+    open-loop error deployment would see.
+    """
+    from ch04.autoregressive_action_head import AutoregressiveActionHead
+    from ch04.train import held_out_metrics
+
+    head = AutoregressiveActionHead(fake_backbone, d_embed=12).eval()
+    calls = {"generate": 0, "teacher_forced": 0}
+    real_generate = head.generate
+    real_teacher = head.teacher_forced_logits
+
+    def spy_generate(*args, **kwargs):
+        calls["generate"] += 1
+        return real_generate(*args, **kwargs)
+
+    def spy_teacher(*args, **kwargs):
+        calls["teacher_forced"] += 1
+        return real_teacher(*args, **kwargs)
+
+    head.generate = spy_generate
+    head.teacher_forced_logits = spy_teacher
+
+    metrics = held_out_metrics(
+        head, fake_backbone, _eval_loader(2), fake_stats,
+        _tokenizer(), torch.device("cpu"),
+    )
+    # Cross-entropy stays teacher-forced; the decoded metrics do not.
+    assert calls["teacher_forced"] == 2
+    assert calls["generate"] == 2
+    assert 0.0 <= metrics["accuracy"] <= 1.0
+    assert metrics["mae_in_std"] > 0
+    assert metrics["rollout_batches_used"] == 2
+
+
+def test_held_out_metrics_can_bound_expensive_rollouts(
+    fake_backbone, fake_stats
+):
+    from ch04.autoregressive_action_head import AutoregressiveActionHead
+    from ch04.train import held_out_metrics
+
+    head = AutoregressiveActionHead(fake_backbone, d_embed=12).eval()
+    calls = {"n": 0}
+    real_generate = head.generate
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return real_generate(*args, **kwargs)
+
+    head.generate = spy
+    metrics = held_out_metrics(
+        head, fake_backbone, _eval_loader(4), fake_stats,
+        _tokenizer(), torch.device("cpu"), rollout_batches=2,
+    )
+    assert calls["n"] == 2
+    assert metrics["rollout_batches_used"] == 2
+
+
+def test_held_out_metrics_unchanged_for_one_pass_heads(
+    fake_backbone, fake_stats
+):
+    """The parallel head has no generate path, so nothing should shift."""
+    from ch04.parallel_action_head import ParallelDecodeActionHead
+    from ch04.train import held_out_metrics
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12).eval()
+    metrics = held_out_metrics(
+        head, fake_backbone, _eval_loader(2), fake_stats,
+        _tokenizer(), torch.device("cpu"),
+    )
+    assert 0.0 <= metrics["accuracy"] <= 1.0
+    assert metrics["mae_in_std"] > 0
+
+
+def test_training_bounds_the_validation_rollout(
+    fake_backbone, fake_stats
+):
+    """Cross-entropy can span many batches; the rollout need not.
+
+    An AR rollout costs H * D serial steps per batch, so an unbounded
+    decoded metric on every validation tick would dominate training time.
+    """
+    from ch04.autoregressive_action_head import AutoregressiveActionHead
+    from ch04.train import train_action_head
+
+    head = AutoregressiveActionHead(fake_backbone, d_embed=12)
+    calls = {"n": 0}
+    real_generate = head.generate
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return real_generate(*args, **kwargs)
+
+    head.generate = spy
+    history = train_action_head(
+        head, fake_backbone, [_batch() for _ in range(2)], fake_stats,
+        _tokenizer(), torch.device("cpu"), total_steps=2,
+        warmup_steps=1,
+        validation_loader=[_batch() for _ in range(6)],
+        validate_every=2, validation_batches=6,
+        validation_rollout_batches=2,
+    )
+    # One validation tick: six batches of loss, two of them rolled out.
+    assert calls["n"] == 2
+    assert history[-1]["validation_accuracy"] is not None

@@ -8,16 +8,22 @@ import torch
 from ch04 import ActionTokenizer
 from ch04.analysis import (
     collect_cell_softmaxes,
+    collect_expert_action_grids,
     collect_expert_pairs,
     collect_joint_logit_mass,
     decoded_chunk_stream,
     expert_pairs_from_batch,
     joint_mismatch_samples,
     logit_mismatch_rates,
+    measure_inference_flops,
+    measure_inference_latency,
     mismatch_rates,
     neighborhood_softmax_figure,
     open_loop_episode_trace,
     sampled_grids_by_head,
+    select_bimodal_anchor,
+    select_coupled_control_pair,
+    select_representative_open_loop_window,
     set_seed,
 )
 from ch04.cli import (
@@ -35,7 +41,9 @@ from ch04.diagnostics import (
     plot_joint_mismatch_panels,
     plot_neighbor_softmaxes,
     plot_open_loop_episode,
+    plot_open_loop_offset_errors,
     plot_per_joint_metrics,
+    plot_quality_compute_tradeoff,
     plot_temporal_traces,
     plot_training_curves,
 )
@@ -66,6 +74,24 @@ def test_nearest_neighbors_ranks_by_state_distance():
         nearest_state_neighbors(states, anchor_index=9)
     with pytest.raises(ValueError):
         nearest_state_neighbors(states, 0, n_neighbors=99)
+
+
+def test_representative_probe_finds_a_balanced_local_split():
+    states = np.arange(12, dtype=np.float32)[:, None] * 0.01
+    targets = np.array([20] * 6 + [220] * 6)
+    selected = select_bimodal_anchor(states, targets, n_neighbors=12)
+    assert selected["separation_bins"] >= 190
+    assert selected["balance"] == pytest.approx(1.0)
+    assert len(selected["neighbor_indices"]) == 12
+
+
+def test_coupled_pair_selector_uses_held_out_targets_only():
+    rng = np.random.default_rng(0)
+    grids = rng.integers(0, 256, (128, 2, 4))
+    grids[:, 0, 3] = grids[:, 0, 1]
+    selected = select_coupled_control_pair(grids, timestep=0)
+    assert selected["dims"] == (1, 3)
+    assert selected["score"] > 0.9
 
 
 def test_neighbor_softmax_figure_has_targets_and_curves():
@@ -163,6 +189,14 @@ def test_temporal_and_schedule_and_episode_figures():
             np.zeros((2, 1)), np.zeros((2, 1)), valid=np.zeros(2, bool)
         )
 
+    figure = plot_open_loop_offset_errors(
+        {"factorized": np.ones((4, 2)), "parallel": np.full((4, 2), 0.5)},
+        joint_names=["pan.pos", "lift.pos"],
+    )
+    assert len(figure.axes) == 3  # two heads and a shared colorbar
+    assert figure.axes[0].get_xlabel() == "prediction offset"
+    plt.close(figure)
+
 
 def test_training_curves_plot_train_and_sparse_held_out_points():
     history = [
@@ -248,6 +282,11 @@ def test_head_comparison_bars_are_labelled_and_coloured():
 
     with pytest.raises(KeyError, match="validation_ce"):
         plot_head_comparison({"parallel": {"mae_std": 1.0}})
+
+    figure = plot_quality_compute_tradeoff(summary)
+    assert figure.axes[0].get_xscale() == "log"
+    assert "decode-schedule proxy" in figure.axes[0].get_xlabel()
+    plt.close(figure)
 
 
 # --- analysis: model-driven drivers ---------------------------------------
@@ -363,6 +402,12 @@ def test_collect_joint_logits_and_expert_pairs(
     )
     assert pairs.shape == (5, 2)
 
+    grids = collect_expert_action_grids(
+        loader, fake_stats, _tokenizer(), "cpu"
+    )
+    assert grids["target_bins"].shape == (5, 16, 6)
+    assert grids["valid"].all()
+
 
 def test_sampled_grids_keep_the_full_action_grid(
     parallel_head, fake_backbone, model_inputs
@@ -385,6 +430,20 @@ def test_open_loop_trace_and_chunk_stream(
     assert trace["predicted"].shape == (4, 6)
     assert trace["expert"].shape == (4, 6)
     assert trace["valid"].tolist() == [True] * 4
+    assert trace["episode_index"].tolist() == [0] * 4
+    assert trace["frame_index"].tolist() == list(range(4))
+
+    moving = {
+        "predicted": np.zeros((12, 2)),
+        "expert": np.r_[np.zeros((6, 2)), np.arange(12).reshape(6, 2)],
+        "valid": np.ones(12, dtype=bool),
+        "episode_index": np.array([0] * 6 + [1] * 6),
+        "frame_index": np.array(list(range(6)) * 2),
+    }
+    selected = select_representative_open_loop_window(moving, max_steps=4)
+    assert selected["episode_index"] == 1
+    assert selected["predicted"].shape == (4, 2)
+    assert np.all(np.asarray(selected["indices"]) >= 6)
 
     chunks = decoded_chunk_stream(
         parallel_head, fake_backbone, loader, _tokenizer(), fake_stats,
@@ -465,3 +524,136 @@ def test_figures_parser_accepts_a_checkpoint_and_head():
     assert arguments.checkpoint == "ckpt/best.pt"
     assert arguments.head == "autoregressive"
     assert arguments.dims == [1, 2]
+
+
+# --- section 4.6: measured inference cost ---------------------------------
+
+
+def test_measure_inference_flops_reports_work_and_serial_depth(
+    fake_backbone, model_inputs
+):
+    heads = {
+        name: build_action_head(name, fake_backbone, d_embed=12).eval()
+        for name in HEAD_NAMES
+    }
+    measured = measure_inference_flops(heads, fake_backbone, model_inputs)
+
+    assert set(measured) == set(HEAD_NAMES)
+    for name, values in measured.items():
+        assert values["flops"] > 0, f"{name} recorded no arithmetic"
+        assert np.isfinite(values["flops"])
+
+    assert measured["autoregressive"]["serial_steps"] == 96
+    assert measured["factorized"]["serial_steps"] == 1
+    assert measured["parallel"]["serial_steps"] == 1
+
+
+def test_measure_inference_flops_rejects_an_out_of_range_example(
+    fake_backbone, model_inputs
+):
+    heads = {
+        "parallel": build_action_head(
+            "parallel", fake_backbone, d_embed=12
+        ).eval()
+    }
+    with pytest.raises(IndexError):
+        measure_inference_flops(
+            heads, fake_backbone, model_inputs, example=9
+        )
+
+
+def test_tradeoff_plot_prefers_measured_flops_over_the_proxy():
+    summary = {
+        "factorized": {"mae_std": 0.09},
+        "parallel": {"mae_std": 0.05},
+        "autoregressive": {"mae_std": 0.02},
+    }
+    measured = {
+        "factorized": {"flops": 2.0e9, "serial_steps": 1},
+        "parallel": {"flops": 6.0e9, "serial_steps": 1},
+        "autoregressive": {"flops": 7.0e9, "serial_steps": 96},
+    }
+    figure = plot_quality_compute_tradeoff(summary, flops=measured)
+    axis = figure.axes[0]
+    assert "FLOPs" in axis.get_xlabel()
+    assert "proxy" not in axis.get_xlabel()
+    labels = [text.get_text() for text in axis.texts]
+    assert any("96 serial" in label for label in labels), labels
+    plt.close(figure)
+
+
+def test_measure_inference_latency_ranks_serial_decoding_slowest(
+    fake_backbone, model_inputs
+):
+    heads = {
+        name: build_action_head(name, fake_backbone, d_embed=12).eval()
+        for name in HEAD_NAMES
+    }
+    measured = measure_inference_latency(
+        heads, fake_backbone, model_inputs, repeats=5, warmup=2
+    )
+
+    assert set(measured) == set(HEAD_NAMES)
+    for name, values in measured.items():
+        assert values["latency_ms"] > 0, f"{name} recorded no time"
+        assert np.isfinite(values["latency_ms"])
+        assert values["p10_ms"] <= values["latency_ms"] <= values["p90_ms"]
+        assert values["device"] == "cpu"
+
+    assert measured["autoregressive"]["serial_steps"] == 96
+    # 96 dependent steps against one pass: the margin is large enough that
+    # this ordering does not depend on a quiet machine.
+    assert (
+        measured["autoregressive"]["latency_ms"]
+        > measured["parallel"]["latency_ms"]
+    )
+
+
+def test_measure_inference_latency_validates_its_arguments(
+    fake_backbone, model_inputs
+):
+    heads = {
+        "parallel": build_action_head(
+            "parallel", fake_backbone, d_embed=12
+        ).eval()
+    }
+    with pytest.raises(IndexError):
+        measure_inference_latency(
+            heads, fake_backbone, model_inputs, example=9
+        )
+    with pytest.raises(ValueError, match="repeats"):
+        measure_inference_latency(
+            heads, fake_backbone, model_inputs, repeats=0
+        )
+
+
+def test_tradeoff_plot_prefers_latency_over_flops_and_proxy():
+    summary = {
+        "parallel": {"mae_std": 0.05},
+        "autoregressive": {"mae_std": 0.02},
+    }
+    flops = {
+        "parallel": {"flops": 6.0e9, "serial_steps": 1},
+        "autoregressive": {"flops": 4.8e9, "serial_steps": 96},
+    }
+    latency = {
+        "parallel": {
+            "latency_ms": 12.0, "serial_steps": 1, "device": "cuda",
+        },
+        "autoregressive": {
+            "latency_ms": 320.0, "serial_steps": 96, "device": "cuda",
+        },
+    }
+    figure = plot_quality_compute_tradeoff(
+        summary, flops=flops, latency=latency
+    )
+    axis = figure.axes[0]
+    assert "latency" in axis.get_xlabel()
+    assert "FLOPs" not in axis.get_xlabel()
+    # Latency, unlike FLOPs, must place the serial head at higher cost.
+    positions = {
+        collection.get_offsets()[0][0]: collection
+        for collection in axis.collections
+    }
+    assert max(positions) == 320.0
+    plt.close(figure)
