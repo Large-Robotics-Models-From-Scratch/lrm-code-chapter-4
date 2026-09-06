@@ -193,6 +193,7 @@ def test_colab_produces_every_code_backed_figure():
         "figure 4.11": "plot_open_loop_episode",
         "section 4.6 trade-off": "plot_quality_compute_tradeoff",
         "section 4.7 offset errors": "plot_open_loop_offset_errors",
+        "section 4.7 camera overlay": "plot_camera_trajectory_overlay",
     }
     missing = [
         figure for figure, symbol in required.items()
@@ -211,6 +212,15 @@ def test_figure_411_uses_representative_episode_and_compares_all_heads():
     assert "plot_open_loop_offset_errors" in code
     assert "open_loop_metrics" in code
     assert "mae_in_standard_deviations" in code
+    assert "end_effector_path" in code
+    assert "observation.images.side" in code
+    assert "observation.state" in code
+
+
+def test_quality_latency_plot_uses_rollout_accuracy():
+    code = _notebook_code()
+    assert "'rollout_accuracy'" in code
+    assert "validation_metrics']['accuracy']" in code
 
 
 def test_colab_records_the_provenance_section_461_requires():

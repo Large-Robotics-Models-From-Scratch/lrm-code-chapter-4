@@ -290,6 +290,7 @@ def test_head_comparison_bars_are_labelled_and_coloured():
 
     summary = {
         name: {"validation_ce": 5.0 + i, "mae_std": 1.0 + i,
+               "rollout_accuracy": 0.2 + 0.1 * i,
                "jitter": 10.0 + i}
         for i, name in enumerate(HEAD_NAMES)
     }
@@ -587,9 +588,9 @@ def test_measure_inference_flops_rejects_an_out_of_range_example(
 
 def test_tradeoff_plot_prefers_measured_flops_over_the_proxy():
     summary = {
-        "factorized": {"mae_std": 0.09},
-        "parallel": {"mae_std": 0.05},
-        "autoregressive": {"mae_std": 0.02},
+        "factorized": {"rollout_accuracy": 0.31},
+        "parallel": {"rollout_accuracy": 0.38},
+        "autoregressive": {"rollout_accuracy": 0.46},
     }
     measured = {
         "factorized": {"flops": 2.0e9, "serial_steps": 1},
@@ -652,8 +653,8 @@ def test_measure_inference_latency_validates_its_arguments(
 
 def test_tradeoff_plot_prefers_latency_over_flops_and_proxy():
     summary = {
-        "parallel": {"mae_std": 0.05},
-        "autoregressive": {"mae_std": 0.02},
+        "parallel": {"rollout_accuracy": 0.38},
+        "autoregressive": {"rollout_accuracy": 0.46},
     }
     flops = {
         "parallel": {"flops": 6.0e9, "serial_steps": 1},
@@ -679,4 +680,5 @@ def test_tradeoff_plot_prefers_latency_over_flops_and_proxy():
         for collection in axis.collections
     }
     assert max(positions) == 320.0
+    assert "accuracy" in axis.get_ylabel()
     plt.close(figure)

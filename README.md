@@ -145,6 +145,7 @@ ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
 | 4.9 | `diagnostics.plot_joint_sample_panels` | expert support and true deployment samples on one shared scale |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
 | 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands, one six-control figure per trained head |
+| 4.7 overlay | `camera_overlay.plot_camera_trajectory_overlay` | approximate URDF FK path over the fixed side-camera frame |
 | — | `diagnostics.plot_training_curves` | train/held-out CE and token accuracy |
 | — | `diagnostics.plot_per_joint_metrics` | per-control train/held-out accuracy and MAE |
 | — | `diagnostics.plot_head_comparison` | final metric per head |
@@ -235,6 +236,16 @@ three policies over one another. The notebook also prints each variant's
 padding-aware decoded MAE per control, averaged over the horizon-offset
 matrix returned by `evaluate_open_loop`. These remain open-loop diagnostics,
 not closed-loop task-success measurements.
+
+The camera overlay begins at the selected frame's recorded proprioceptive
+state and applies one autoregressive chunk as absolute joint-position targets.
+The [public SO-101 URDF](https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf)
+supplies forward kinematics. Because
+`svla_so101_pickplace` does not publish camera intrinsics or camera-to-base
+extrinsics, the notebook uses a documented seven-landmark weak-perspective fit
+to the fixed side view, prints its anchor-fit pixel RMSE, and labels the result
+as approximate. It is an illustration of the commanded kinematic path, not a
+calibrated camera measurement or a closed-loop rollout.
 
 ## SO-101 chunk playback and episode replay
 

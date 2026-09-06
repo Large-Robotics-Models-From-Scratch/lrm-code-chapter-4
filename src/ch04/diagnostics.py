@@ -1266,7 +1266,11 @@ def plot_head_comparison(summary: dict, metrics: dict | None = None):
 def plot_quality_compute_tradeoff(
     summary: dict,
     decode_steps: dict | None = None,
-    quality_key: str = "mae_std",
+    quality_key: str = "rollout_accuracy",
+    quality_label: str = (
+        "held-out rollout token accuracy (higher is better)"
+    ),
+    higher_is_better: bool = True,
     flops: dict | None = None,
     latency: dict | None = None,
 ):
@@ -1310,7 +1314,9 @@ def plot_quality_compute_tradeoff(
     ]
     if any(x <= 0 or not np.isfinite([x, y]).all()
            for _, x, y in points):
-        raise ValueError("trade-off values must be positive and finite")
+        raise ValueError(
+            "cost must be positive and all values must be finite"
+        )
 
     figure, axis = plt.subplots(figsize=(7.2, 4.2))
     for name, x, y in points:
@@ -1347,9 +1353,18 @@ def plot_quality_compute_tradeoff(
         )
 
     frontier = []
-    best_quality = float("inf")
-    for name, x, y in sorted(points, key=lambda item: (item[1], item[2])):
-        if y < best_quality:
+    best_quality = -float("inf") if higher_is_better else float("inf")
+    order = sorted(
+        points,
+        key=lambda item: (
+            item[1], -item[2] if higher_is_better else item[2]
+        ),
+    )
+    for name, x, y in order:
+        improves = (
+            y > best_quality if higher_is_better else y < best_quality
+        )
+        if improves:
             frontier.append((x, y))
             best_quality = y
     if len(frontier) > 1:
@@ -1371,9 +1386,21 @@ def plot_quality_compute_tradeoff(
             if flops
             else "serial prediction steps (decode-schedule proxy)"
         ),
-        ylabel="open-loop MAE / training std (lower is better)",
+        ylabel=quality_label,
         title="Quality–latency trade-off for the three discrete heads",
     )
+    if "accuracy" in quality_key:
+        from matplotlib.ticker import PercentFormatter
+
+        axis.yaxis.set_major_formatter(PercentFormatter(1.0))
+        qualities = [point[2] for point in points]
+        padding = max(
+            0.04, 0.18 * (max(qualities) - min(qualities))
+        )
+        axis.set_ylim(
+            max(0.0, min(qualities) - padding),
+            min(1.0, max(qualities) + padding),
+        )
     axis.margins(y=0.12)
     axis.legend(loc="best")
     annotate_source(
