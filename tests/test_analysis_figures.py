@@ -252,12 +252,21 @@ def test_training_curves_plot_train_and_sparse_held_out_points():
     assert any("train" in label for label in labels)
     assert any("held out" in label for label in labels)
     assert any("uniform" in label for label in labels)
-    # Held-out markers are drawn only where a measurement exists.
+    # Held-out measurements are joined to show progression and use
+    # prominent markers.
     held_out = [
         line for line in loss_axis.lines
-        if line.get_linestyle() == "None"
+        if "held out" in line.get_label()
+    ]
+    held_accuracy = [
+        line for line in accuracy_axis.lines
+        if "held out" in line.get_label()
     ]
     assert held_out and len(held_out[0].get_xdata()) == 3
+    assert held_accuracy and len(held_accuracy[0].get_xdata()) == 3
+    validation_lines = held_out + held_accuracy
+    assert all(line.get_linestyle() != "None" for line in validation_lines)
+    assert all(line.get_markersize() >= 7 for line in validation_lines)
     plt.close(figure)
 
     with pytest.raises(ValueError, match="at least one"):

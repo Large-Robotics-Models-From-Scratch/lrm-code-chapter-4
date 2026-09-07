@@ -231,6 +231,7 @@ def test_colab_records_the_provenance_section_461_requires():
     assert "select_coupled_control_pair" in code
     assert "ANCHOR_INDEX = 0" not in code
     assert "PAIR_DIMS, TIMESTEP = 0, (4, 5), 0" not in code
+    assert "N_NEIGHBORS = 24" in code
 
 
 def test_colab_has_fixed_sanity_and_full_training_modes():

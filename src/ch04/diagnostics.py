@@ -1002,10 +1002,10 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
     """Training/held-out cross-entropy and overall token accuracy.
 
     ``histories`` maps a head name to the list :func:`train_action_head`
-    returns. Held-out points are sparse by construction, so they are drawn
-    as markers over the continuous training curve. The ``ln(B)`` reference
-    line is the loss of a uniform policy: a curve that never leaves it has
-    not started learning.
+    returns. Held-out points are sparse by construction, so visible markers
+    and a thin connecting line show their progression over training. The
+    ``ln(B)`` reference line is the loss of a uniform policy: a curve that
+    never leaves it has not started learning.
     """
     import matplotlib.pyplot as plt
 
@@ -1035,10 +1035,13 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
                 [point[1] for point in held_out],
                 color=style["color"],
                 marker=style["marker"],
-                ls="none",
-                ms=6,
+                ls="-",
+                lw=1.0,
+                ms=7,
+                alpha=0.9,
                 markeredgecolor="white",
-                markeredgewidth=0.8,
+                markeredgewidth=1.0,
+                zorder=5,
                 label=f"{style['label']} (held out)",
             )
         axes[1].plot(
@@ -1059,10 +1062,13 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
                 [point[1] for point in held_accuracy],
                 color=style["color"],
                 marker=style["marker"],
-                ls="none",
-                ms=5,
+                ls="-",
+                lw=1.0,
+                ms=7,
+                alpha=0.9,
                 markeredgecolor="white",
-                markeredgewidth=0.7,
+                markeredgewidth=1.0,
+                zorder=5,
                 label=f"{style['label']} (held out)",
             )
 
