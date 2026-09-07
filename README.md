@@ -10,7 +10,7 @@ The repository turns Chapter 3's fused VLA representation into an
 SO-101 action policy trained from Chapter 2's demonstrations. It includes
 the manuscript's three action-head designs:
 
-- `FactorizedActionHead`: a one-shot product-of-marginals baseline.
+- `OneshotActionHead`: a one-shot product-of-marginals baseline.
 - `AutoregressiveActionHead`: exact left-to-right conditioning with a
   teacher-forced training path, separate action embeddings, and KV-cached
   generation.
@@ -22,7 +22,7 @@ the manuscript's three action-head designs:
 ```text
 src/ch04/
 ├── action_tokenizer.py          # Q01/Q99 uniform per-control bins
-├── factorized_action_head.py    # Listing 4.2
+├── oneshot_action_head.py       # Listing 4.2
 ├── autoregressive_action_head.py# Listings 4.3–4.4
 ├── parallel_action_head.py      # Listing 4.5
 ├── backbone_adapter.py          # helpers for Ch3's two-stage API

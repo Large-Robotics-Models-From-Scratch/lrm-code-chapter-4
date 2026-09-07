@@ -202,10 +202,10 @@ def test_select_bins_defaults_to_argmax():
 def test_generic_decode_supports_factorized_head(
     fake_backbone, fake_stats, model_inputs
 ):
-    from ch04 import ActionTokenizer, FactorizedActionHead
+    from ch04 import ActionTokenizer, OneshotActionHead
 
     tokenizer = ActionTokenizer(-np.ones(6), np.ones(6))
-    head = FactorizedActionHead(d_embed=12)
+    head = OneshotActionHead(d_embed=12)
     decoded = decode_action_chunk(
         head,
         fake_backbone,

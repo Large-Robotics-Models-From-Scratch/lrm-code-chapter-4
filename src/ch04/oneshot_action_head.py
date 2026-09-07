@@ -12,7 +12,7 @@ from ch04.constants import (
 )
 
 
-class FactorizedActionHead(nn.Module):
+class OneshotActionHead(nn.Module):
     """Predict every action-grid cell independently from one state."""
 
     def __init__(

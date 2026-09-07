@@ -419,12 +419,12 @@ def test_shared_training_loop_supports_every_head(
 ):
     from ch04 import (
         AutoregressiveActionHead,
-        FactorizedActionHead,
+        OneshotActionHead,
         ParallelDecodeActionHead,
     )
 
     builders = {
-        "factorized": lambda: FactorizedActionHead(d_embed=12),
+        "factorized": lambda: OneshotActionHead(d_embed=12),
         "autoregressive": lambda: AutoregressiveActionHead(
             fake_backbone, d_embed=12
         ),

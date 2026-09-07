@@ -15,11 +15,11 @@ from ch04.constants import (
     ACTION_HORIZON,
     SMOLLM_WIDTH,
 )
-from ch04.factorized_action_head import FactorizedActionHead
 from ch04.losses import (
     expand_timestep_pad_mask,
     masked_token_cross_entropy,
 )
+from ch04.oneshot_action_head import OneshotActionHead
 from ch04.parallel_action_head import ParallelDecodeActionHead
 
 __all__ = [
@@ -30,7 +30,7 @@ __all__ = [
     "SMOLLM_WIDTH",
     "ActionTokenizer",
     "AutoregressiveActionHead",
-    "FactorizedActionHead",
+    "OneshotActionHead",
     "ParallelDecodeActionHead",
     "expand_timestep_pad_mask",
     "fit_action_tokenizer",

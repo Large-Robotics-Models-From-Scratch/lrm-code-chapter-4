@@ -5,13 +5,13 @@ import torch
 
 from ch04 import (
     AutoregressiveActionHead,
-    FactorizedActionHead,
+    OneshotActionHead,
     ParallelDecodeActionHead,
 )
 
 
 def test_factorized_head_shape_and_float32():
-    head = FactorizedActionHead(d_embed=12)
+    head = OneshotActionHead(d_embed=12)
     logits = head(torch.rand(3, 12))
     assert logits.shape == (3, 16, 6, 256)
     assert logits.dtype == torch.float32

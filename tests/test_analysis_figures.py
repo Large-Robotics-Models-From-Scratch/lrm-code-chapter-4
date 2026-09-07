@@ -408,11 +408,11 @@ def test_neighborhood_figure_caption_records_the_provenance():
 def test_joint_samples_and_mismatch_rate_per_head(
     parallel_head, fake_backbone, model_inputs
 ):
-    from ch04 import AutoregressiveActionHead, FactorizedActionHead
+    from ch04 import AutoregressiveActionHead, OneshotActionHead
 
     heads = {
         "parallel": parallel_head,
-        "factorized": FactorizedActionHead(d_embed=12).eval(),
+        "factorized": OneshotActionHead(d_embed=12).eval(),
         "autoregressive": AutoregressiveActionHead(
             fake_backbone, d_embed=12, horizon=16, action_dim=6
         ).eval(),

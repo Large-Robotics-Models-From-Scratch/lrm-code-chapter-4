@@ -24,7 +24,7 @@ from ch04.constants import (
     ACTION_HORIZON,
     SMOLLM_WIDTH,
 )
-from ch04.factorized_action_head import FactorizedActionHead
+from ch04.oneshot_action_head import OneshotActionHead
 from ch04.parallel_action_head import ParallelDecodeActionHead
 
 HEAD_NAMES = ("factorized", "parallel", "autoregressive")
@@ -68,7 +68,7 @@ def build_action_head(
         )
     width = d_embed or backbone_width(backbone)
     if name == "factorized":
-        return FactorizedActionHead(
+        return OneshotActionHead(
             d_embed=width,
             horizon=horizon,
             action_dim=action_dim,
