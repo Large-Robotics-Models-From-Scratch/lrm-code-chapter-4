@@ -8,6 +8,7 @@ from ch04 import ActionTokenizer
 from ch04.decoding import evaluation_mode
 from ch04.execution import TemporalEnsembler, execute_chunk
 from ch04.train import (
+    _checkpoint_array_equal,
     action_head_logits,
     action_metrics,
     backbone_parameters,
@@ -34,6 +35,19 @@ def _tokenizer():
         -5 * np.ones(6, dtype=np.float32),
         5 * np.ones(6, dtype=np.float32),
     )
+
+
+def test_checkpoint_metadata_comparison_is_device_agnostic():
+    if torch.cuda.is_available():
+        checkpoint_device = "cuda"
+    elif torch.backends.mps.is_available():
+        checkpoint_device = "mps"
+    else:
+        checkpoint_device = "cpu"
+    saved = torch.tensor([-5.0, 5.0], device=checkpoint_device)
+    current = np.array([-5.0, 5.0], dtype=np.float32)
+    assert _checkpoint_array_equal(saved, current)
+    assert not _checkpoint_array_equal(saved, current + 1)
 
 
 def test_warmup_cosine_schedule():

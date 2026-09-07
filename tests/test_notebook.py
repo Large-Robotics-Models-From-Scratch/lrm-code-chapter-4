@@ -257,6 +257,15 @@ def test_colab_defines_metrics_directly_without_literature_rationale():
         assert phrase not in text
 
 
+def test_colab_adds_the_bimodal_figure_title_at_the_call_site():
+    code = _notebook_code()
+    title = (
+        "figure.suptitle('Regression collapses between modes; "
+        "a mixture does not')"
+    )
+    assert title in code
+
+
 def test_full_colab_mirrors_and_resumes_checkpoints_from_google_drive():
     code = _notebook_code()
     text = _notebook_text()

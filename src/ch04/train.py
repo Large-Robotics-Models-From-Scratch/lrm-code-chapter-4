@@ -31,6 +31,13 @@ def _make_summary_writer(log_dir: str | Path, purge_step: int | None):
     return SummaryWriter(log_dir=str(log_dir), purge_step=purge_step)
 
 
+def _checkpoint_array_equal(saved, current) -> bool:
+    """Compare checkpoint metadata without inheriting its load device."""
+    saved_tensor = torch.as_tensor(saved).detach().cpu()
+    current_tensor = torch.as_tensor(current).detach().cpu()
+    return torch.equal(saved_tensor, current_tensor)
+
+
 def head_parameters(head, backbone) -> list[torch.nn.Parameter]:
     """Return trainable parameters owned by the new action head."""
     backbone_ids = {id(parameter) for parameter in backbone.parameters()}
@@ -678,13 +685,11 @@ def train_action_head(
         saved_tokenizer = checkpoint["tokenizer"]
         if (
             saved_tokenizer["n_bins"] != tokenizer.n_bins
-            or not torch.equal(
-                torch.as_tensor(saved_tokenizer["lo"]),
-                torch.from_numpy(tokenizer.lo),
+            or not _checkpoint_array_equal(
+                saved_tokenizer["lo"], tokenizer.lo
             )
-            or not torch.equal(
-                torch.as_tensor(saved_tokenizer["hi"]),
-                torch.from_numpy(tokenizer.hi),
+            or not _checkpoint_array_equal(
+                saved_tokenizer["hi"], tokenizer.hi
             )
         ):
             raise ValueError("resume tokenizer differs from checkpoint")

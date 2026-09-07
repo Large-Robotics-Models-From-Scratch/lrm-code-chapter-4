@@ -145,6 +145,12 @@ def test_bimodal_comparison_overlays_the_mixture_density():
     )
     labels = figure.axes[0].get_legend_handles_labels()[1]
     assert any("Gaussian mixture" in label for label in labels)
+    assert figure.axes[0].get_title() == ""
+    legend = figure.axes[0].get_legend()
+    anchor = legend.get_bbox_to_anchor().transformed(
+        figure.axes[0].transAxes.inverted()
+    )
+    assert anchor.y0 < 0
     plt.close(figure)
 
 

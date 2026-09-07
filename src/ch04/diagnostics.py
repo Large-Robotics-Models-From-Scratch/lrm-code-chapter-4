@@ -383,12 +383,13 @@ def plot_bimodal_comparison(
             lw=1.35,
             label="two-component Gaussian mixture",
         )
-    ax.set(
-        xlabel="action value",
-        ylabel="probability density",
-        title="Regression collapses between modes; a mixture does not",
+    ax.set(xlabel="action value", ylabel="probability density")
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.20),
+        ncols=3,
+        frameon=False,
     )
-    ax.legend(loc="upper center")
     return ax.figure
 
 
