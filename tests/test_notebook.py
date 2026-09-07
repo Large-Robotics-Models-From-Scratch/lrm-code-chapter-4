@@ -288,6 +288,23 @@ def test_full_colab_mirrors_and_resumes_checkpoints_from_google_drive():
     assert "every 1,000-step local checkpoint" in text
     assert "atomically" in text
 
+
+def test_colab_resumes_latest_but_evaluates_the_best_checkpoint():
+    code = _notebook_code()
+    training = code.index("history = train_action_head(")
+    restore = code.index(
+        "load_policy_state_dict(head, backbone, best_checkpoint['model'])"
+    )
+    evaluation = code.index("validation_metrics = held_out_metrics(")
+    assert training < restore < evaluation
+    assert "os.path.join(mirror_dir, 'best.pt')" in code
+    assert "'evaluation_checkpoint': best_path" in code
+    assert "checkpoint=parallel_result['evaluation_checkpoint']" in code
+    assert (
+        "source=results['autoregressive']['evaluation_checkpoint']"
+        in code
+    )
+
 def test_colab_setup_removes_only_broken_optional_torchaudio():
     path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
     notebook = json.loads(path.read_text())
