@@ -415,21 +415,13 @@ def nearest_state_neighbors(
     return order[:n_neighbors]
 
 
-def plot_neighbor_softmaxes(
+def plot_neighborhood_mode_recovery(
     probabilities: np.ndarray,
     target_bins: np.ndarray,
-    n_curves: int = 6,
     n_bins: int | None = None,
     caption: str | None = None,
 ):
-    """Figure 4.8: held-out softmaxes around one proprioceptive anchor.
-
-    The upper panel histograms the demonstrated bins of the neighbourhood.
-    The lower panel emphasizes the anchor prediction and overlays a few
-    neighbours selected across the demonstrated target range.  This makes
-    the two expert modes visible without letting six nearly identical lines
-    hide the actual comparison.
-    """
+    """Figure 4.8: expert and predicted modes on the same nearby rows."""
     import matplotlib.pyplot as plt
 
     probs = np.asarray(probabilities, dtype=np.float32)
@@ -438,26 +430,8 @@ def plot_neighbor_softmaxes(
         raise ValueError("probabilities must have shape [N, bins]")
     if targets.shape[0] != probs.shape[0]:
         raise ValueError("one target bin is required per neighbour")
-    if n_curves < 1:
-        raise ValueError("n_curves must be positive")
     bin_count = n_bins or probs.shape[1]
-
-    figure, axes = plt.subplots(
-        2, 1, figsize=(8, 5.2), sharex=True,
-        gridspec_kw={"height_ratios": [1, 2.1]},
-    )
-    counts, edges, _ = axes[0].hist(
-        targets,
-        bins=min(32, bin_count),
-        range=(0, bin_count),
-        color=EXPERT_COLOR,
-        alpha=0.80,
-    )
-    axes[0].set_ylabel("expert frames")
-    axes[0].set_title(
-        f"Expert targets near one proprioceptive state "
-        f"({probs.shape[0]} held-out frames)"
-    )
+    predictions = probs.argmax(axis=1)
 
     ordered_targets = np.sort(targets.astype(float))
     minimum_group = max(2, int(np.ceil(0.2 * len(ordered_targets))))
@@ -468,64 +442,64 @@ def plot_neighbor_softmaxes(
         split_index = int(
             eligible[np.argmax(np.diff(ordered_targets)[eligible])]
         )
+        split_value = 0.5 * (
+            ordered_targets[split_index]
+            + ordered_targets[split_index + 1]
+        )
         mode_peaks = (
             float(np.median(ordered_targets[: split_index + 1])),
             float(np.median(ordered_targets[split_index + 1 :])),
         )
-        for peak in mode_peaks:
-            axes[0].axvline(peak, color=UNSUPPORTED_COLOR, ls="--", lw=1.0)
-            axes[0].annotate(
-                f"mode {peak:.0f}",
-                xy=(peak, max(counts.max(), 1.0)),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                fontsize=8,
-                color=UNSUPPORTED_COLOR,
-            )
+    else:
+        split_value = float(np.median(ordered_targets))
+        mode_peaks = (split_value, split_value)
 
-    axis = np.arange(probs.shape[1])
-    shown = min(n_curves, probs.shape[0])
-    representative = np.unique(
-        np.linspace(0, probs.shape[0] - 1, shown, dtype=int)
+    order = np.argsort(targets, kind="stable")
+    expert = targets[order]
+    policy = predictions[order]
+    frames = np.arange(len(order))
+    figure, axis = plt.subplots(figsize=(8, 4.2))
+    axis.vlines(
+        frames,
+        np.minimum(expert, policy),
+        np.maximum(expert, policy),
+        color=NEUTRAL_COLOR,
+        alpha=0.25,
+        lw=0.7,
     )
-    target_order = np.argsort(targets, kind="stable")
-    representative = target_order[representative]
-    for index in representative:
-        axes[1].plot(
-            axis,
-            probs[index],
-            color=NEUTRAL_COLOR,
-            alpha=0.35,
-            lw=0.75,
-            label=(
-                "nearby predictions"
-                if index == representative[0]
-                else None
-            ),
+    axis.scatter(
+        frames, expert, color=EXPERT_COLOR, marker="o", s=24,
+        label="expert action bin", zorder=3,
+    )
+    axis.scatter(
+        frames, policy, color=POLICY_COLOR, marker="x", s=28,
+        label="policy argmax bin", zorder=4,
+    )
+    for index, peak in enumerate(mode_peaks, start=1):
+        axis.axhline(
+            peak,
+            color=UNSUPPORTED_COLOR,
+            ls="--",
+            lw=0.9,
+            alpha=0.8,
+            label="expert mode centers" if index == 1 else None,
         )
-    axes[1].plot(
-        axis,
-        probs[0],
-        color=POLICY_COLOR,
-        lw=1.8,
-        label="anchor prediction",
-        zorder=4,
+    mode_agreement = np.mean(
+        (targets >= split_value) == (predictions >= split_value)
     )
-    axes[1].plot(
-        axis, probs.mean(axis=0), color=SUPPORTED_COLOR, lw=1.15,
-        ls="--", label="neighbourhood mean",
+    axis.set(
+        xlabel=(
+            f"{len(order)} nearby held-out frames "
+            "(sorted by expert action)"
+        ),
+        ylabel=f"action bin (0-{bin_count - 1})",
+        ylim=(-0.5, bin_count - 0.5),
+        title=(
+            "Policy selects the expert mode on "
+            f"{mode_agreement:.1%} of nearby frames"
+        ),
     )
-    axes[1].set(
-        xlabel=f"action bin (0-{bin_count - 1})",
-        ylabel="predicted probability",
-        xlim=(0, bin_count - 1),
-    )
-    axes[1].set_title(
-        f"One policy cell at nearby proprioceptive states "
-        f"({len(representative)} examples shown)"
-    )
-    axes[1].legend(loc="upper right")
+    axis.legend(loc="upper center", ncols=3, frameon=False)
     if caption:
         annotate_source(figure, caption)
     return figure

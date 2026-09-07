@@ -2,7 +2,7 @@
 
 Every figure the manuscript attributes to code is produced here:
 figure 4.4 (MSE against a mixture), figure 4.8 (the listing 4.9
-neighbourhood softmaxes), figure 4.9 (joint mismatch from deployment
+neighbourhood mode recovery), figure 4.9 (joint mismatch from deployment
 samples), figure 4.10 (execution schedules), and figure 4.11 (an open-loop
 episode).
 """
@@ -117,7 +117,7 @@ def generate_all(
         collect_expert_pairs,
         collect_generated_pairs,
         decoded_chunk_stream,
-        neighborhood_softmax_figure,
+        neighborhood_mode_recovery_figure,
         open_loop_episode_trace,
         select_bimodal_anchor,
         select_pair_mode_support,
@@ -154,7 +154,7 @@ def generate_all(
         seed=split_seed,
     )
 
-    announce("figure 4.8: held-out softmax neighbourhood")
+    announce("figure 4.8: held-out neighborhood mode recovery")
     all_cells = collect_action_softmaxes(
         head,
         backbone,
@@ -181,7 +181,7 @@ def generate_all(
     )
     written["figure_4_8"] = str(
         _save(
-            neighborhood_softmax_figure(
+            neighborhood_mode_recovery_figure(
                 collected,
                 anchor_index=selection["anchor_index"],
                 n_neighbors=n_neighbors,

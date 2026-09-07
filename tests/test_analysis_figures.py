@@ -18,7 +18,7 @@ from ch04.analysis import (
     measure_inference_flops,
     measure_inference_latency,
     mismatch_rates,
-    neighborhood_softmax_figure,
+    neighborhood_mode_recovery_figure,
     open_loop_episode_trace,
     sampled_grids_by_head,
     select_bimodal_anchor,
@@ -41,7 +41,7 @@ from ch04.diagnostics import (
     plot_joint_logit_panels,
     plot_joint_mismatch_panels,
     plot_joint_sample_panels,
-    plot_neighbor_softmaxes,
+    plot_neighborhood_mode_recovery,
     plot_open_loop_episode,
     plot_open_loop_offset_errors,
     plot_per_joint_metrics,
@@ -96,24 +96,29 @@ def test_coupled_pair_selector_uses_held_out_targets_only():
     assert selected["score"] > 0.9
 
 
-def test_neighbor_softmax_figure_has_targets_and_curves():
+def test_neighborhood_mode_recovery_compares_the_same_rows():
     probabilities = np.full((8, 16), 1 / 16, dtype=np.float32)
-    targets = np.arange(8)
-    figure = plot_neighbor_softmaxes(
-        probabilities, targets, n_curves=3, caption="ckpt=x seed=0"
+    probabilities[:4, 2] = 0.8
+    probabilities[4:, 13] = 0.8
+    targets = np.array([2] * 4 + [13] * 4)
+    figure = plot_neighborhood_mode_recovery(
+        probabilities, targets, caption="ckpt=x seed=0"
     )
-    upper, lower = figure.axes
-    assert (
-        "Expert targets near one proprioceptive state" in upper.get_title()
-    )
-    assert "action bin" in lower.get_xlabel()
+    axis = figure.axes[0]
+    assert "selects the expert mode on 100.0%" in axis.get_title()
+    assert "8 nearby held-out frames" in axis.get_xlabel()
+    assert "action bin" in axis.get_ylabel()
     # Provenance moves to a figure footnote so it cannot stretch the axes.
     assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
-    # Three neighbours plus the emphasized anchor and neighbourhood mean.
-    assert len(lower.lines) == 5
+    labels = axis.get_legend_handles_labels()[1]
+    assert labels == [
+        "expert action bin",
+        "policy argmax bin",
+        "expert mode centers",
+    ]
     plt.close(figure)
     with pytest.raises(ValueError, match="one target bin"):
-        plot_neighbor_softmaxes(probabilities, targets[:2])
+        plot_neighborhood_mode_recovery(probabilities, targets[:2])
 
 
 def test_joint_sample_panels_use_expert_derived_support():
@@ -381,7 +386,7 @@ def test_neighborhood_figure_caption_records_the_provenance():
         "probabilities": np.full((10, 32), 1 / 32),
         "target_bins": np.arange(10),
     }
-    figure = neighborhood_softmax_figure(
+    figure = neighborhood_mode_recovery_figure(
         collected, anchor_index=3, n_neighbors=5, checkpoint="best.pt",
         seed=11,
     )

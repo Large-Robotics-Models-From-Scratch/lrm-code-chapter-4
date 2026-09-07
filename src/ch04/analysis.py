@@ -2,7 +2,7 @@
 
 :mod:`ch04.diagnostics` holds pure plotting functions that take arrays.
 This module runs a trained head over held-out data to produce those
-arrays: the neighbourhood softmaxes of listing 4.9, the per-head joint
+arrays: the neighbourhood mode recovery of listing 4.9, the per-head joint
 samples of figure 4.9, the episode trace of figure 4.11, and the chunk
 stream the execution schedules of figure 4.10 consume.
 """
@@ -27,7 +27,7 @@ from ch04.diagnostics import (
     joint_logit_mismatch_rate,
     joint_mismatch_rate,
     nearest_state_neighbors,
-    plot_neighbor_softmaxes,
+    plot_neighborhood_mode_recovery,
 )
 from ch04.train import action_head_logits
 
@@ -60,7 +60,7 @@ def select_bimodal_anchor(
     demonstrated bins.  It is deliberately based on held-out targets rather
     than model confidence, so the diagnostic cannot cherry-pick a flattering
     policy output.  The returned neighbour indices can be passed directly to
-    :func:`ch04.diagnostics.plot_neighbor_softmaxes`.
+    :func:`ch04.diagnostics.plot_neighborhood_mode_recovery`.
     """
     values = np.asarray(states, dtype=np.float32)
     targets = np.asarray(target_bins).reshape(-1)
@@ -195,11 +195,10 @@ def collect_action_softmaxes(
     }
 
 
-def neighborhood_softmax_figure(
+def neighborhood_mode_recovery_figure(
     collected: Mapping[str, np.ndarray],
     anchor_index: int,
     n_neighbors: int = 32,
-    n_curves: int = 6,
     checkpoint: str = "unspecified",
     seed: int = 0,
 ):
@@ -221,10 +220,12 @@ def neighborhood_softmax_figure(
         f"checkpoint={label} anchor={anchor_index} "
         f"neighbors={n_neighbors} seed={seed}"
     )
-    return plot_neighbor_softmaxes(
+    caption += (
+        "; neighborhood=proprioception, policy input=full observation"
+    )
+    return plot_neighborhood_mode_recovery(
         collected["probabilities"][neighbors],
         collected["target_bins"][neighbors],
-        n_curves=n_curves,
         caption=caption,
     )
 

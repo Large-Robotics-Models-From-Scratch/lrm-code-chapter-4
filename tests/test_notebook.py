@@ -187,7 +187,7 @@ def test_colab_produces_every_code_backed_figure():
     code = _notebook_code()
     required = {
         "figure 4.4": "plot_bimodal_comparison",
-        "figure 4.8": "neighborhood_softmax_figure",
+        "figure 4.8": "neighborhood_mode_recovery_figure",
         "figure 4.9": "plot_joint_sample_panels",
         "figure 4.10": "plot_execution_schedules",
         "figure 4.11": "plot_open_loop_episode",

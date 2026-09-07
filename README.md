@@ -141,7 +141,7 @@ ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
 | Figure | Helper | What it shows |
 | --- | --- | --- |
 | 4.4 | `diagnostics.plot_bimodal_comparison` | MSE collapse against a two-component mixture |
-| 4.8 | `analysis.neighborhood_softmax_figure` | listing 4.9's held-out softmax cluster |
+| 4.8 | `analysis.neighborhood_mode_recovery_figure` | expert and policy modes on the same nearby held-out frames |
 | 4.9 | `diagnostics.plot_joint_sample_panels` | expert support and true deployment samples on one shared scale |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
 | 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands, one six-control figure per trained head |
@@ -158,7 +158,7 @@ identity across every figure — and so the three stay separable in
 grayscale print. The Colab calls it once in its setup cell; `ch04-figures`
 calls it for you.
 
-Section 4.6.1 requires that a reported softmax figure name its
+Section 4.6.1 requires that the mode-recovery figure name its
 checkpoint, anchor index, neighbour count, and seed. The caption is
 generated from those arguments, so it cannot drift from the run.
 
