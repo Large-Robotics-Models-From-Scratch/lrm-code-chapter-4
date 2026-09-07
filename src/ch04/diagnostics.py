@@ -421,8 +421,9 @@ def plot_neighborhood_mode_recovery(
     n_bins: int | None = None,
     caption: str | None = None,
 ):
-    """Figure 4.8: expert and predicted modes on the same nearby rows."""
+    """Figure 4.8: policy distributions and mode-selection agreement."""
     import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
 
     probs = np.asarray(probabilities, dtype=np.float32)
     targets = np.asarray(target_bins).reshape(-1)
@@ -431,6 +432,8 @@ def plot_neighborhood_mode_recovery(
     if targets.shape[0] != probs.shape[0]:
         raise ValueError("one target bin is required per neighbour")
     bin_count = n_bins or probs.shape[1]
+    if bin_count != probs.shape[1]:
+        raise ValueError("n_bins must match the probability width")
     predictions = probs.argmax(axis=1)
 
     ordered_targets = np.sort(targets.astype(float))
@@ -454,52 +457,113 @@ def plot_neighborhood_mode_recovery(
         split_value = float(np.median(ordered_targets))
         mode_peaks = (split_value, split_value)
 
-    order = np.argsort(targets, kind="stable")
-    expert = targets[order]
-    policy = predictions[order]
-    frames = np.arange(len(order))
-    figure, axis = plt.subplots(figsize=(8, 4.2))
-    axis.vlines(
-        frames,
-        np.minimum(expert, policy),
-        np.maximum(expert, policy),
-        color=NEUTRAL_COLOR,
-        alpha=0.25,
-        lw=0.7,
+    expert_high = targets >= split_value
+    policy_high = predictions >= split_value
+    if expert_high.all() or (~expert_high).all():
+        raise ValueError("target bins must contain two modes")
+    mode_agreement = float(np.mean(expert_high == policy_high))
+
+    figure, (distribution_axis, agreement_axis) = plt.subplots(
+        1,
+        2,
+        figsize=(9.2, 3.8),
+        gridspec_kw={"width_ratios": (2.15, 1.0)},
     )
-    axis.scatter(
-        frames, expert, color=EXPERT_COLOR, marker="o", s=24,
-        label="expert action bin", zorder=3,
-    )
-    axis.scatter(
-        frames, policy, color=POLICY_COLOR, marker="x", s=28,
-        label="policy argmax bin", zorder=4,
-    )
-    for index, peak in enumerate(mode_peaks, start=1):
-        axis.axhline(
-            peak,
-            color=UNSUPPORTED_COLOR,
-            ls="--",
-            lw=0.9,
-            alpha=0.8,
-            label="expert mode centers" if index == 1 else None,
+    bins = np.arange(bin_count)
+    mode_colors = (EXPERT_COLOR, POLICY_COLOR)
+    mode_masks = (~expert_high, expert_high)
+    mode_names = ("low", "high")
+    for mask, name, color, peak in zip(
+        mode_masks, mode_names, mode_colors, mode_peaks, strict=True
+    ):
+        group = probs[mask]
+        average = group.mean(axis=0)
+        lower, upper = np.quantile(group, (0.25, 0.75), axis=0)
+        distribution_axis.fill_between(
+            bins, lower, upper, color=color, alpha=0.14, linewidth=0
         )
-    mode_agreement = np.mean(
-        (targets >= split_value) == (predictions >= split_value)
+        distribution_axis.plot(
+            bins,
+            average,
+            color=color,
+            lw=2.0,
+            label=f"{name} expert mode (n={int(mask.sum())})",
+        )
+        distribution_axis.axvline(
+            peak, color=color, ls=":", lw=1.2, alpha=0.9
+        )
+        near_right_edge = peak > 0.75 * (bin_count - 1)
+        distribution_axis.annotate(
+            f"expert {name}\nmode",
+            xy=(peak, average[int(np.clip(round(peak), 0, bin_count - 1))]),
+            xytext=(-6 if near_right_edge else 0, 10),
+            textcoords="offset points",
+            ha="right" if near_right_edge else "center",
+            va="bottom",
+            fontsize=8,
+            color=color,
+        )
+    distribution_axis.set(
+        xlabel=f"action bin (0-{bin_count - 1})",
+        ylabel="mean policy probability",
+        xlim=(-0.5, bin_count - 0.5),
+        title="Probability moves with the expert mode",
     )
-    axis.set(
-        xlabel=(
-            f"{len(order)} nearby held-out frames "
-            "(sorted by expert action)"
-        ),
-        ylabel=f"action bin (0-{bin_count - 1})",
-        ylim=(-0.5, bin_count - 0.5),
-        title=(
-            "Policy selects the expert mode on "
-            f"{mode_agreement:.1%} of nearby frames"
-        ),
+    distribution_axis.legend(loc="upper left", frameon=False)
+
+    counts = np.zeros((2, 2), dtype=int)
+    np.add.at(
+        counts,
+        (expert_high.astype(int), policy_high.astype(int)),
+        1,
     )
-    axis.legend(loc="upper center", ncols=3, frameon=False)
+    row_totals = counts.sum(axis=1, keepdims=True)
+    fractions = np.divide(
+        counts,
+        row_totals,
+        out=np.zeros_like(counts, dtype=float),
+        where=row_totals > 0,
+    )
+    background = np.asarray(to_rgb("#F4F5F7"))
+    cell_colors = np.empty((2, 2, 3), dtype=float)
+    for row in range(2):
+        for column in range(2):
+            base = SUPPORTED_COLOR if row == column else UNSUPPORTED_COLOR
+            strength = 0.0 if counts[row, column] == 0 else (
+                0.18 + 0.72 * fractions[row, column]
+            )
+            cell_colors[row, column] = (
+                (1.0 - strength) * background
+                + strength * np.asarray(to_rgb(base))
+            )
+    agreement_axis.imshow(cell_colors)
+    for row in range(2):
+        for column in range(2):
+            value = fractions[row, column]
+            agreement_axis.text(
+                column,
+                row,
+                f"{counts[row, column]}\n{value:.0%}",
+                ha="center",
+                va="center",
+                fontsize=11,
+                fontweight="bold" if row == column else "normal",
+                color="white" if value > 0.55 else NEUTRAL_COLOR,
+            )
+    agreement_axis.set(
+        xticks=(0, 1),
+        xticklabels=("low", "high"),
+        yticks=(0, 1),
+        yticklabels=("low", "high"),
+        xlabel="policy-selected mode",
+        ylabel="expert mode",
+        title=f"Mode agreement: {mode_agreement:.1%}",
+    )
+    figure.suptitle(
+        "Policy mode recovery across nearby held-out frames",
+        fontweight="bold",
+    )
+    figure.tight_layout(rect=(0, 0.04, 1, 0.94))
     if caption:
         annotate_source(figure, caption)
     return figure

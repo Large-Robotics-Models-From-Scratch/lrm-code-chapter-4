@@ -141,7 +141,7 @@ ch04-figures checkpoints/parallel/latest.pt --head parallel --output-dir figures
 | Figure | Helper | What it shows |
 | --- | --- | --- |
 | 4.4 | `diagnostics.plot_bimodal_comparison` | MSE collapse against a two-component mixture |
-| 4.8 | `analysis.neighborhood_mode_recovery_figure` | expert and policy modes on the same nearby held-out frames |
+| 4.8 | `analysis.neighborhood_mode_recovery_figure` | mode-conditioned policy probabilities and a low/high agreement matrix |
 | 4.9 | `diagnostics.plot_joint_sample_panels` | expert support and true deployment samples on one shared scale |
 | 4.10 | `diagnostics.plot_execution_schedules` | the three section 4.7.2 schedules |
 | 4.11 | `diagnostics.plot_open_loop_episode` | expert against decoded commands, one six-control figure per trained head |

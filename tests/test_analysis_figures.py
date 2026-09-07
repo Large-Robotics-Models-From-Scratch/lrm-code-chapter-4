@@ -104,18 +104,17 @@ def test_neighborhood_mode_recovery_compares_the_same_rows():
     figure = plot_neighborhood_mode_recovery(
         probabilities, targets, caption="ckpt=x seed=0"
     )
-    axis = figure.axes[0]
-    assert "selects the expert mode on 100.0%" in axis.get_title()
-    assert "8 nearby held-out frames" in axis.get_xlabel()
-    assert "action bin" in axis.get_ylabel()
+    distribution_axis, agreement_axis = figure.axes
+    assert "Probability moves" in distribution_axis.get_title()
+    assert "action bin" in distribution_axis.get_xlabel()
+    assert distribution_axis.get_ylabel() == "mean policy probability"
+    assert "Mode agreement: 100.0%" in agreement_axis.get_title()
+    assert agreement_axis.get_xlabel() == "policy-selected mode"
+    assert agreement_axis.get_ylabel() == "expert mode"
     # Provenance moves to a figure footnote so it cannot stretch the axes.
     assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
-    labels = axis.get_legend_handles_labels()[1]
-    assert labels == [
-        "expert action bin",
-        "policy argmax bin",
-        "expert mode centers",
-    ]
+    labels = distribution_axis.get_legend_handles_labels()[1]
+    assert labels == ["low expert mode (n=4)", "high expert mode (n=4)"]
     plt.close(figure)
     with pytest.raises(ValueError, match="one target bin"):
         plot_neighborhood_mode_recovery(probabilities, targets[:2])
