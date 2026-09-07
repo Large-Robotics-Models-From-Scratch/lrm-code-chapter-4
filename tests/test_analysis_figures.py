@@ -209,6 +209,7 @@ def test_temporal_and_schedule_and_episode_figures():
     assert len(figure.axes) == 2
     assert figure.axes[-1].get_xlabel().startswith("episode timestep")
     assert figure.axes[0].get_title().startswith("factorized")
+    assert figure.axes[0].texts[0].get_text().startswith("Control MAE")
     assert "factorized (one-shot)" in (
         figure.axes[0].get_legend_handles_labels()[1]
     )
@@ -224,6 +225,8 @@ def test_temporal_and_schedule_and_episode_figures():
     )
     assert len(figure.axes) == 3  # two heads and a shared colorbar
     assert figure.axes[0].get_xlabel() == "prediction offset"
+    assert figure._suptitle.get_text().startswith("Held-out Control MAE")
+    assert figure.axes[-1].get_ylabel() == "Control MAE"
     plt.close(figure)
 
 
@@ -287,7 +290,7 @@ def test_per_joint_metrics_use_small_multiples():
     figure = plot_per_joint_metrics(history, ["pan.pos", "lift.pos"])
     assert len(figure.axes) == 4
     assert figure.axes[0].get_title() == "pan"
-    assert figure.axes[2].get_ylabel() == "MAE / training std"
+    assert figure.axes[2].get_ylabel() == "Control MAE"
     plt.close(figure)
 
 

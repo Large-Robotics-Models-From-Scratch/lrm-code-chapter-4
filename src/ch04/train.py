@@ -873,7 +873,7 @@ def train_action_head(
                     completed_step,
                 )
                 writer.add_scalar(
-                    "mae_in_std/train",
+                    "control_mae/train",
                     history[-1]["mae_in_std"],
                     completed_step,
                 )
@@ -909,7 +909,7 @@ def train_action_head(
                         completed_step,
                     )
                 writer.add_scalar(
-                    "mae_in_std/held_out",
+                    "control_mae/held_out",
                     validation_metrics["teacher_forced_mae_in_std"],
                     completed_step,
                 )
@@ -932,7 +932,7 @@ def train_action_head(
                 message = (
                     f"[{completed_step:6d}] loss={history[-1]['loss']:.3f} "
                     f"train_batch_tf_acc={history[-1]['accuracy']:.1%} "
-                    f"train_batch_tf_mae/std="
+                    f"train_batch_tf_control_mae="
                     f"{history[-1]['mae_in_std']:.3f}"
                 )
                 if validation is not None:

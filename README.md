@@ -117,15 +117,15 @@ Chapter 4 reports these by control dimension as small multiples so six
 joint curves never obscure one another.
 
 `accuracy` means exact argmax-bin agreement over non-padded action cells.
-`mae_in_std` decodes the predicted bin centre in z-score-normalized action
-space and averages absolute error; 1.0 is one training-set standard
-deviation. `mae_raw_by_control` denormalizes both prediction and target
-before measuring each joint in the dataset's native command units. The
-headline open-loop MAE is the per-cell raw error divided by that control's
-training standard deviation and then averaged. These are imitation-fit
+`mae_in_std` is reported as **Control MAE**: it decodes the predicted bin
+centre, normalizes each control by its training-set variation, and averages
+the absolute error. `mae_raw_by_control` denormalizes both prediction and
+target before measuring each joint in the dataset's native command units.
+The headline Control MAE averages the normalized per-cell errors. These are
+imitation-fit
 metrics, not physical task-success rates. The train/held-out metrics read
 the logits used by the loss, so later autoregressive cells are
-teacher-forced. The separately reported open-loop MAE calls each head's
+teacher-forced. The separately reported open-loop Control MAE calls each head's
 actual inference path and does not provide future expert bins.
 
 ## Regenerating the figures

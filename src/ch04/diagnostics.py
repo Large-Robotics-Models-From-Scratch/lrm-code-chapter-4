@@ -948,7 +948,7 @@ def plot_open_loop_episode(
         axis.set_ylabel(names[index], fontsize=9)
         error = float(np.abs(pred[:, index] - target[:, index]).mean())
         axis.annotate(
-            f"MAE {error:.2f}",
+            f"Control MAE {error:.2f}",
             xy=(0.995, 0.86), xycoords="axes fraction",
             ha="right", fontsize=8, color="#6E6E76",
         )
@@ -1016,11 +1016,11 @@ def plot_open_loop_offset_errors(
         axis.title.set_color(head_color(name))
         axis.grid(False)
     axes[0][0].set_ylabel("control")
-    figure.suptitle("Held-out open-loop MAE / training standard deviation")
+    figure.suptitle("Held-out Control MAE by prediction offset")
     bar = figure.colorbar(
         image, ax=axes[0].tolist(), fraction=0.025, pad=0.02
     )
-    bar.set_label("MAE / training std", fontsize=9)
+    bar.set_label("Control MAE", fontsize=9)
     return figure
 
 
@@ -1207,7 +1207,7 @@ def plot_per_joint_metrics(
         mae.set_ylim(0.0, None)
         mae.set_xlabel("step")
     axes[0, 0].set_ylabel("exact bin accuracy")
-    axes[1, 0].set_ylabel("MAE / training std")
+    axes[1, 0].set_ylabel("Control MAE")
     handles, labels = axes[0, 0].get_legend_handles_labels()
     figure.legend(
         handles,
@@ -1235,7 +1235,7 @@ def plot_head_comparison(summary: dict, metrics: dict | None = None):
         raise ValueError("summary must contain at least one head")
     metrics = metrics or {
         "validation_ce": "Held-out CE (nats / token)",
-        "mae_std": "Open-loop MAE (training std)",
+        "mae_std": "Open-loop Control MAE",
         "jitter": "Sampled jitter (bins / step)",
     }
     names = list(summary)

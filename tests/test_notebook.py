@@ -257,6 +257,13 @@ def test_colab_defines_metrics_directly_without_literature_rationale():
         assert phrase not in text
 
 
+def test_colab_labels_normalized_error_as_control_mae():
+    text = _notebook_text()
+    assert "Control MAE" in text
+    for old_label in ("MAE/std", "MAE / std", "MAE / training std"):
+        assert old_label not in text
+
+
 def test_colab_adds_the_bimodal_figure_title_at_the_call_site():
     code = _notebook_code()
     title = (
