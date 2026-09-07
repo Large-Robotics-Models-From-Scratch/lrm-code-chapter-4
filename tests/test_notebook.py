@@ -19,6 +19,7 @@ def test_colab_setup_installs_public_chapter_packages_directly():
     notebook = json.loads(path.read_text())
     setup = "".join(notebook["cells"][1]["source"])
 
+    assert "CHAPTER_4_REF = 'main'" in setup
     assert "git+https://github.com/" in setup
     assert "GITHUB_TOKEN" not in setup
     assert "git', 'clone" not in setup
