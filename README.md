@@ -135,7 +135,7 @@ normalization statistics rather than refitting them — and writes every
 figure the chapter attributes to code:
 
 ```bash
-ch04-figures checkpoints/parallel/best.pt --head parallel --output-dir figures
+ch04-figures checkpoints/parallel/latest.pt --head parallel --output-dir figures
 ```
 
 | Figure | Helper | What it shows |

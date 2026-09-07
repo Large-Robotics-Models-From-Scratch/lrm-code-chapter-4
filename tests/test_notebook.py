@@ -290,21 +290,29 @@ def test_full_colab_mirrors_and_resumes_checkpoints_from_google_drive():
     assert "atomically" in text
 
 
-def test_colab_resumes_latest_but_evaluates_the_best_checkpoint():
+def test_colab_evaluates_the_latest_fixed_budget_checkpoint():
     code = _notebook_code()
     training = code.index("history = train_action_head(")
     restore = code.index(
-        "load_policy_state_dict(head, backbone, best_checkpoint['model'])"
+        "load_policy_state_dict(head, backbone, latest_checkpoint['model'])"
     )
     evaluation = code.index("validation_metrics = held_out_metrics(")
     assert training < restore < evaluation
-    assert "os.path.join(mirror_dir, 'best.pt')" in code
-    assert "'evaluation_checkpoint': best_path" in code
+    assert "os.path.join(mirror_dir, 'latest.pt')" in code
+    assert "'evaluation_checkpoint': latest_path" in code
     assert "checkpoint=parallel_result['evaluation_checkpoint']" in code
     assert (
         "source=results['autoregressive']['evaluation_checkpoint']"
         in code
     )
+
+
+def test_colab_halves_only_the_ar_head_learning_rate():
+    code = _notebook_code()
+    assert "HEAD_LEARNING_RATE = 1e-4" in code
+    assert "AR_HEAD_LEARNING_RATE = 5e-5" in code
+    assert "if name == 'autoregressive'" in code
+    assert "learning_rate=head_learning_rate" in code
 
 def test_colab_setup_removes_only_broken_optional_torchaudio():
     path = Path(__file__).parents[1] / "notebooks/ch04.ipynb"
