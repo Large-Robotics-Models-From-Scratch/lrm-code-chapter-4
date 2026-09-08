@@ -286,6 +286,61 @@ def test_training_curves_plot_train_and_sparse_held_out_points():
         plot_training_curves({"parallel": []})
 
 
+def test_training_curves_show_the_rollout_accuracy_gap():
+    def make(rollout_offset):
+        return [
+            {"step": float(i), "loss": 5.5 - 0.1 * i, "entropy": 5.5,
+             "accuracy": 0.1 * i,
+             "validation_loss": 5.4 - 0.1 * i,
+             "validation_accuracy": 0.1 * i,
+             "validation_rollout_accuracy": 0.1 * i - rollout_offset}
+            for i in range(6)
+        ]
+
+    figure = plot_training_curves(
+        {"parallel": make(0.0), "autoregressive": make(0.3)}
+    )
+    accuracy_axis = figure.axes[1]
+    # The rollout series is drawn with open markers and no per-head label,
+    # so it never doubles the legend.
+    rollout = [
+        line for line in accuracy_axis.lines
+        if line.get_linestyle() == ":"
+    ]
+    assert len(rollout) == 2
+    assert all(
+        line.get_markerfacecolor() == "none" for line in rollout
+    )
+    teacher_forced = [
+        line for line in accuracy_axis.lines
+        if "held out" in line.get_label()
+    ]
+    assert len(teacher_forced) == 2
+    # One shared legend entry explains the open marker.
+    labels = figure.legends[0].get_texts()
+    assert sum(
+        "free-running rollout" in text.get_text() for text in labels
+    ) == 1
+    plt.close(figure)
+
+    # A history from before rollout metrics existed draws neither the
+    # extra series nor the extra legend entry.
+    plain = [
+        {"step": 0.0, "loss": 5.5, "entropy": 5.5, "accuracy": 0.2,
+         "validation_loss": 5.4, "validation_accuracy": 0.2}
+    ]
+    figure = plot_training_curves({"parallel": plain})
+    assert not [
+        line for line in figure.axes[1].lines
+        if line.get_linestyle() == ":"
+    ]
+    assert not any(
+        "free-running rollout" in text.get_text()
+        for text in figure.legends[0].get_texts()
+    )
+    plt.close(figure)
+
+
 def test_training_curves_handle_a_run_without_validation():
     history = [
         {"step": 0.0, "loss": 5.5, "entropy": 5.5,
@@ -564,7 +619,7 @@ def test_cli_parser_defaults_and_all_expansion():
     from ch04.cli import build_parser
 
     arguments = build_parser().parse_args([])
-    assert arguments.head == ["parallel"]
+    assert arguments.head == ["autoregressive"]
     assert arguments.steps == 20_000
     assert arguments.learning_rate == 1e-4
     assert arguments.backbone_learning_rate == 1e-5
@@ -584,6 +639,9 @@ def test_figures_parser_accepts_a_checkpoint_and_head():
     assert arguments.checkpoint == "ckpt/best.pt"
     assert arguments.head == "autoregressive"
     assert arguments.dims == [1, 2]
+
+    defaults = build_parser().parse_args(["ckpt/best.pt"])
+    assert defaults.head == "autoregressive"
 
 
 # --- section 4.6: measured inference cost ---------------------------------
@@ -624,9 +682,9 @@ def test_measure_inference_flops_rejects_an_out_of_range_example(
 
 def test_tradeoff_plot_prefers_measured_flops_over_the_proxy():
     summary = {
-        "factorized": {"rollout_accuracy": 0.31},
-        "parallel": {"rollout_accuracy": 0.38},
-        "autoregressive": {"rollout_accuracy": 0.46},
+        "factorized": {"mae_std": 0.46},
+        "parallel": {"mae_std": 0.38},
+        "autoregressive": {"mae_std": 0.31},
     }
     measured = {
         "factorized": {"flops": 2.0e9, "serial_steps": 1},
@@ -689,8 +747,8 @@ def test_measure_inference_latency_validates_its_arguments(
 
 def test_tradeoff_plot_prefers_latency_over_flops_and_proxy():
     summary = {
-        "parallel": {"rollout_accuracy": 0.38},
-        "autoregressive": {"rollout_accuracy": 0.46},
+        "parallel": {"mae_std": 0.38},
+        "autoregressive": {"mae_std": 0.31},
     }
     flops = {
         "parallel": {"flops": 6.0e9, "serial_steps": 1},
@@ -716,5 +774,45 @@ def test_tradeoff_plot_prefers_latency_over_flops_and_proxy():
         for collection in axis.collections
     }
     assert max(positions) == 320.0
-    assert "accuracy" in axis.get_ylabel()
+    assert "Control MAE" in axis.get_ylabel()
+    assert "lower is better" in axis.get_ylabel()
     plt.close(figure)
+
+
+def test_tradeoff_frontier_treats_control_mae_as_lower_is_better():
+    # The cheap head is beaten on quality, so both points are
+    # non-dominated and the dashed frontier must connect them.
+    summary = {
+        "parallel": {"mae_std": 0.38},
+        "autoregressive": {"mae_std": 0.31},
+    }
+    latency = {
+        "parallel": {
+            "latency_ms": 12.0, "serial_steps": 1, "device": "cuda",
+        },
+        "autoregressive": {
+            "latency_ms": 320.0, "serial_steps": 96, "device": "cuda",
+        },
+    }
+    axis = plot_quality_compute_tradeoff(
+        summary, latency=latency
+    ).axes[0]
+    frontier = [
+        line for line in axis.lines
+        if line.get_label() == "non-dominated frontier"
+    ]
+    assert len(frontier) == 1
+    assert list(frontier[0].get_ydata()) == [0.38, 0.31]
+    plt.close(axis.figure)
+
+    # Raising the serial head's error makes it dominated: more latency for
+    # worse quality, so it must drop off the frontier entirely.
+    dominated = dict(summary, autoregressive={"mae_std": 0.51})
+    axis = plot_quality_compute_tradeoff(
+        dominated, latency=latency
+    ).axes[0]
+    assert not [
+        line for line in axis.lines
+        if line.get_label() == "non-dominated frontier"
+    ]
+    plt.close(axis.figure)

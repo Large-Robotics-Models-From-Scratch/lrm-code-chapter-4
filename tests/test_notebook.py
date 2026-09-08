@@ -218,10 +218,61 @@ def test_figure_411_uses_representative_episode_and_compares_all_heads():
     assert "observation.state" in code
 
 
-def test_quality_latency_plot_uses_rollout_accuracy():
+def test_colab_can_recheck_a_head_from_another_checkpoint():
     code = _notebook_code()
-    assert "'rollout_accuracy'" in code
-    assert "validation_metrics']['accuracy']" in code
+    recheck = code.index("RECHECK_CHECKPOINT = 'best.pt'")
+    # It runs after all three trainers and before the shared curves, and
+    # it must not disturb the fixed-budget checkpoint the figures use.
+    curves = code.index("training_figure = plot_training_curves(")
+    assert code.index("results['autoregressive'] = ") < recheck < curves
+    cell = code[recheck:curves]
+    # It reports, it does not rebind what the later figures read.
+    assert "results[" not in cell
+    assert "'evaluation_checkpoint'" not in cell
+    # Same slice as 4.5.1 to 4.5.3, so the numbers are comparable.
+    assert "device, max_batches=EVAL_BATCHES)" in cell
+    assert "itertools.islice(validation_loader, EVAL_BATCHES)" in cell
+    for reported in (
+        "recheck_metrics['loss']",
+        "recheck_metrics['teacher_forced_accuracy']",
+        "recheck_metrics['accuracy']",
+        "recheck_mae",
+    ):
+        assert reported in cell, reported
+
+
+def test_one_knob_sets_every_held_out_batch_count():
+    code = _notebook_code()
+    # Only EVAL_BATCHES is a form field; the rest scale with it, so no
+    # reported number can rest on a narrower slice than its neighbours.
+    assert 'EVAL_BATCHES = 32         #@param {type:"integer"}' in code
+    for derived in (
+        "VALIDATION_ROLLOUT_BATCHES = max(1, EVAL_BATCHES // 4)",
+        "PLOT_BATCHES = 2 * EVAL_BATCHES",
+        "OPEN_LOOP_BATCHES = 4 * EVAL_BATCHES",
+    ):
+        assert derived in code, derived
+        assert f"{derived.split(' =')[0]} = 8" not in code
+    namespace = {}
+    exec("EVAL_BATCHES = 32\n" + "\n".join(
+        line for line in code.splitlines()
+        if line.startswith(
+            ("VALIDATION_ROLLOUT_BATCHES", "PLOT_BATCHES",
+             "OPEN_LOOP_BATCHES")
+        )
+    ), namespace)
+    # The derivation reproduces the counts the chapter's run used.
+    assert namespace["VALIDATION_ROLLOUT_BATCHES"] == 8
+    assert namespace["PLOT_BATCHES"] == 64
+    assert namespace["OPEN_LOOP_BATCHES"] == 128
+
+
+def test_quality_latency_plot_uses_open_loop_control_mae():
+    code = _notebook_code()
+    assert "{'mae_std': results[name]['mae_std']}" in code
+    assert "'rollout_accuracy'" not in code
+    # Accuracy stays in the printed table, just not on the plot axis.
+    assert "| head | rollout acc | Control MAE |" in code
 
 
 def test_colab_records_the_provenance_section_461_requires():

@@ -1030,12 +1030,21 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
     and a thin connecting line show their progression over training. The
     ``ln(B)`` reference line is the loss of a uniform policy: a curve that
     never leaves it has not started learning.
+
+    Both cross-entropy curves and the filled held-out accuracy markers are
+    teacher-forced, which is what training optimizes. When a history also
+    carries ``validation_rollout_accuracy`` the accuracy panel adds an open
+    marker for the grid each head generates through its own choices. The
+    one-pass heads have no earlier bins to condition on, so their two
+    series coincide; a visible gap belongs to the autoregressive head alone
+    and measures its exposure bias.
     """
     import matplotlib.pyplot as plt
 
     if not histories:
         raise ValueError("histories must contain at least one head")
     figure, axes = plt.subplots(1, 2, figsize=(11, 3.6), layout=None)
+    drew_rollout = False
     for name, history in histories.items():
         if not history:
             raise ValueError(f"{name} has an empty history")
@@ -1095,6 +1104,33 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
                 zorder=5,
                 label=f"{style['label']} (held out)",
             )
+        # Open markers: the same held-out cells scored on the grid the
+        # head generates for itself. Only the autoregressive head can
+        # differ here, so the visible gap between the filled and open
+        # series for one colour is that head's exposure bias.
+        rollout = [
+            (record["step"], record["validation_rollout_accuracy"])
+            for record in history
+            if not np.isnan(
+                record.get("validation_rollout_accuracy", np.nan)
+            )
+        ]
+        if rollout:
+            drew_rollout = True
+            axes[1].plot(
+                [point[0] for point in rollout],
+                [point[1] for point in rollout],
+                color=style["color"],
+                marker=style["marker"],
+                ls=":",
+                lw=1.0,
+                ms=7,
+                alpha=0.9,
+                markerfacecolor="none",
+                markeredgecolor=style["color"],
+                markeredgewidth=1.2,
+                zorder=4,
+            )
 
     axes[0].set(
         xlabel="training step",
@@ -1119,6 +1155,17 @@ def plot_training_curves(histories: dict, log_scale: bool = False):
     # One legend under both panels: an in-axes legend with three heads and
     # their held-out markers covers the curves it is meant to explain.
     handles, labels = axes[0].get_legend_handles_labels()
+    if drew_rollout:
+        from matplotlib.lines import Line2D
+
+        handles.append(
+            Line2D(
+                [], [], color=NEUTRAL_COLOR, ls=":", lw=1.0, marker="o",
+                markerfacecolor="none", markeredgecolor=NEUTRAL_COLOR,
+                markeredgewidth=1.2, ms=7,
+            )
+        )
+        labels.append("held out, free-running rollout (open marker)")
     figure.legend(
         handles,
         labels,
@@ -1271,11 +1318,12 @@ def plot_head_comparison(summary: dict, metrics: dict | None = None):
 def plot_quality_compute_tradeoff(
     summary: dict,
     decode_steps: dict | None = None,
-    quality_key: str = "rollout_accuracy",
+    quality_key: str = "mae_std",
     quality_label: str = (
-        "held-out rollout token accuracy (higher is better)"
+        "held-out open-loop Control MAE "
+        "(training std, lower is better)"
     ),
-    higher_is_better: bool = True,
+    higher_is_better: bool = False,
     flops: dict | None = None,
     latency: dict | None = None,
 ):
@@ -1288,6 +1336,15 @@ def plot_quality_compute_tradeoff(
     observation prefill, so it compresses the autoregressive head's measured
     17x GPU latency penalty into 1.11x the arithmetic. Every point is
     annotated with its serial decode depth.
+
+    The y-axis defaults to open-loop Control MAE, which grades the decoded
+    command by continuous distance along each head's real inference path.
+    Exact-bin accuracy is available via ``quality_key="rollout_accuracy"``
+    with ``higher_is_better=True``, but it is a harsher and noisier axis for
+    a 96-step serial rollout: one bin of 256 counts the same as a
+    catastrophic miss, a single early divergence zeroes out every later
+    cell, and a head that commits to a valid alternative mode scores as
+    wrong against the one recorded trajectory.
     """
     import matplotlib.pyplot as plt
 
