@@ -113,3 +113,104 @@ def test_parallel_head_rejects_a_malformed_prefix_mask(fake_backbone):
     head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
     with pytest.raises(ValueError, match=r"\[B, N\]"):
         head._mask(torch.ones(3, dtype=torch.bool), torch.float32)
+
+
+# --- section 4.4.3: SmolVLA-style temporal tokenization -------------------
+
+
+def _prefix_length(head, model_inputs):
+    return head.backbone.embed_inputs(*model_inputs)[0].shape[1]
+
+
+def test_ar_appends_one_position_per_timestep(fake_backbone, model_inputs):
+    """The AR suffix is H positions long, not H * D.
+
+    The parallel head already appends one slot per future timestep. An AR
+    head that appended one token per (timestep, control) cell would carry a
+    six-fold longer suffix, so every latency and FLOP comparison in section
+    4.6 would confound decoding order with sequence length.
+    """
+    head = AutoregressiveActionHead(
+        fake_backbone, d_embed=12, horizon=4, action_dim=3
+    )
+    targets = torch.randint(0, 256, (2, 4, 3))
+    logits = head.teacher_forced_logits(*model_inputs, targets)
+
+    assert logits.shape == (2, 4, 3, 256)
+    positions = fake_backbone.language_backbone.last_position_ids
+    prefix = _prefix_length(head, model_inputs)
+    assert positions.shape[1] == prefix + head.horizon - 1
+
+
+def test_ar_generation_costs_one_serial_step_per_timestep(
+    fake_backbone, model_inputs
+):
+    """Serial depth is H. Section 4.6 prints this number."""
+    head = AutoregressiveActionHead(
+        fake_backbone, d_embed=12, horizon=4, action_dim=3
+    ).eval()
+    calls = []
+    handle = fake_backbone.language_backbone.register_forward_pre_hook(
+        lambda *_: calls.append(1)
+    )
+    try:
+        with torch.no_grad():
+            generated = head.generate(*model_inputs, temperature=0.0)
+    finally:
+        handle.remove()
+
+    assert generated.shape == (2, 4, 3)
+    assert int(generated.min()) >= 0 and int(generated.max()) < 256
+    # One cached prefill plus H-1 incremental passes: H serial steps.
+    assert len(calls) == head.horizon
+
+
+def test_ar_conditions_on_earlier_timesteps_only(
+    fake_backbone, model_inputs
+):
+    """Temporal causality: timestep t sees t-1 and earlier, nothing later."""
+    torch.manual_seed(0)
+    head = AutoregressiveActionHead(
+        fake_backbone, d_embed=12, horizon=4, action_dim=3
+    ).eval()
+    base = torch.randint(0, 256, (2, 4, 3))
+    later = base.clone()
+    later[:, 2:] = (later[:, 2:] + 7) % 256
+
+    with torch.no_grad():
+        left = head.teacher_forced_logits(*model_inputs, base)
+        right = head.teacher_forced_logits(*model_inputs, later)
+
+    # Timesteps 0..2 are decided before timestep 2's bins are ever read.
+    torch.testing.assert_close(left[:, :3], right[:, :3])
+    # Timestep 3 consumes timestep 2, so it must move.
+    assert not torch.allclose(left[:, 3], right[:, 3])
+
+
+def test_ar_controls_within_a_timestep_are_independent(
+    fake_backbone, model_inputs
+):
+    """The accepted cost of SmolVLA granularity, pinned deliberately.
+
+    All D controls of a timestep are read from one hidden state, so no
+    control conditions on another chosen at the same timestep. This is a
+    real modeling loss relative to the 96-token head -- section 4.4.3 and
+    figure 4.9 must argue on the temporal axis instead -- and it is
+    asserted here so nobody later mistakes it for a bug.
+    """
+    torch.manual_seed(0)
+    head = AutoregressiveActionHead(
+        fake_backbone, d_embed=12, horizon=4, action_dim=3
+    ).eval()
+    base = torch.randint(0, 256, (2, 4, 3))
+    nudged = base.clone()
+    nudged[:, 1, 0] = (nudged[:, 1, 0] + 11) % 256
+
+    with torch.no_grad():
+        left = head.teacher_forced_logits(*model_inputs, base)
+        right = head.teacher_forced_logits(*model_inputs, nudged)
+
+    # Control 0's own bin does not reach its siblings at timestep 1.
+    torch.testing.assert_close(left[:, 1], right[:, 1])
+    # It does reach the next timestep, which is where AR still earns its keep.
+    assert not torch.allclose(left[:, 2], right[:, 2])

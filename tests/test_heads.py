@@ -75,7 +75,12 @@ def test_ar_teacher_forcing_shift(fake_backbone, model_inputs):
     finally:
         handle.remove()
     assert logits.shape == (2, 2, 5, 256)
-    assert torch.equal(captured[-1], targets[:, :-1])
+    # One input token per timestep, dropping the last: [B, H-1, D]. The
+    # per-control offset keeps "control 1, bin 0" distinct from "control 0,
+    # bin 0" in the shared table.
+    grid = targets.view(2, 2, 5)
+    expected = grid[:, :-1] + torch.arange(5) * 256
+    assert torch.equal(captured[-1], expected)
 
 
 def test_ar_masked_loss_ignores_padded_targets(fake_backbone, model_inputs):
@@ -108,7 +113,7 @@ def test_ar_generate_uses_cache_and_encodes_vision_once(
     head = AutoregressiveActionHead(
         fake_backbone,
         d_embed=12,
-        horizon=1,
+        horizon=3,
         action_dim=4,
     )
     captured = []
@@ -119,9 +124,11 @@ def test_ar_generate_uses_cache_and_encodes_vision_once(
         bins = head.generate(*model_inputs)
     finally:
         handle.remove()
-    assert bins.shape == (2, 1, 4)
+    assert bins.shape == (2, 3, 4)
     assert fake_backbone.vision_encoder.calls == 1
-    assert [ids.shape for ids in captured] == [(2, 1)] * 3
+    # Each fed-back token carries one timestep's whole control vector, so
+    # H-1 lookups of shape [B, 1, D] rather than H * D scalar lookups.
+    assert [ids.shape for ids in captured] == [(2, 1, 4)] * 2
 
 
 def test_ar_generate_validates_top_p(fake_backbone, model_inputs):
@@ -139,9 +146,11 @@ def test_ar_generate_validates_top_p(fake_backbone, model_inputs):
 
 def test_ar_uses_separate_action_embedding_table(fake_backbone):
     head = AutoregressiveActionHead(
-        fake_backbone, d_embed=12, n_bins=128
+        fake_backbone, d_embed=12, n_bins=128, action_dim=6
     )
-    assert head.action_embeddings.num_embeddings == 128
+    # One row per (control, bin) pair, not per bin: control identity lives
+    # in the table so summed timestep embeddings stay unambiguous.
+    assert head.action_embeddings.num_embeddings == 6 * 128
     assert (
         head.action_embeddings
         is not fake_backbone.language_backbone.get_input_embeddings()
