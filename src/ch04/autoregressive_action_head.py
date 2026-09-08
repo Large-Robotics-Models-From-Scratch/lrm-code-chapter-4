@@ -1,4 +1,4 @@
-"""Autoregressive action decoder from manuscript listings 4.3 and 4.4."""
+"""Autoregressive action decoder from manuscript listings 4.4 and 4.5."""
 
 from __future__ import annotations
 

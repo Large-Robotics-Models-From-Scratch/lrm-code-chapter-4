@@ -2,7 +2,7 @@
 
 Working code for Chapter 4 of *Build a Large Robot Model (From
 Scratch)*. The implementation follows the current
-[Chapter 4 manuscript](https://docs.google.com/document/d/1UIVpB6hTNta-9RRYwaHuFSvmFnjy__NnYrs1zn_fQDw/edit)
+[v13 Chapter 4 manuscript](https://docs.google.com/document/d/1oSaT2sR271OWgaZEJhyUx4DG6Knu0GbOV0vZJcqjEmo/edit)
 and the live Chapter 3 hand-off contract; older local Chapter 4 drafts are
 not design authorities.
 
@@ -11,11 +11,11 @@ SO-101 action policy trained from Chapter 2's demonstrations. It includes
 the manuscript's three action-head designs:
 
 - `OneshotActionHead`: a one-shot product-of-marginals baseline.
-- `AutoregressiveActionHead`: exact left-to-right conditioning with a
-  teacher-forced training path, separate action embeddings, and KV-cached
-  generation.
-- `ParallelDecodeActionHead`: the manuscript's one-pass training and
-  evaluation path, with bidirectional attention inside the action grid.
+- `AutoregressiveActionHead`: the shipped head, with exact left-to-right
+  conditioning, a teacher-forced training path, separate action
+  embeddings, and KV-cached generation.
+- `ParallelDecodeActionHead`: a one-pass comparison baseline with
+  bidirectional attention inside the action suffix.
 
 ## Repository map
 
@@ -23,8 +23,8 @@ the manuscript's three action-head designs:
 src/ch04/
 ├── action_tokenizer.py          # Q01/Q99 uniform per-control bins
 ├── oneshot_action_head.py       # Listing 4.2
-├── autoregressive_action_head.py# Listings 4.3–4.4
-├── parallel_action_head.py      # Listing 4.5
+├── autoregressive_action_head.py# Listings 4.4–4.5
+├── parallel_action_head.py      # Listing 4.3
 ├── backbone_adapter.py          # helpers for Ch3's two-stage API
 ├── data.py                      # episode splits, chunks + prepare_batch
 ├── losses.py                    # grid shaping + masked smoothed CE
@@ -70,12 +70,14 @@ pytest -m integration
 `ch04-train` fits any head, or all three in sequence, each on its own
 freshly initialized Chapter 3 backbone so the comparison is fair:
 
+With no `--head` argument, it trains the shipped autoregressive head.
+
 ```bash
 ch04-train --head all --steps 20000 --batch-size 32
 ```
 
 ```bash
-ch04-train --head parallel --steps 20000 --checkpoint-dir checkpoints
+ch04-train --steps 20000 --checkpoint-dir checkpoints
 ```
 
 For a full run with live loss curves:
@@ -135,7 +137,8 @@ normalization statistics rather than refitting them — and writes every
 figure the chapter attributes to code:
 
 ```bash
-ch04-figures checkpoints/parallel/latest.pt --head parallel --output-dir figures
+ch04-figures checkpoints/autoregressive/latest.pt \
+  --output-dir figures
 ```
 
 | Figure | Helper | What it shows |
@@ -301,21 +304,22 @@ exposed through `SO101Follower.send_action` and dataset episodes through
   Chapter 2's own torch computation) into one `float32` structure.
 - The tokenizer clips each dimension to q01/q99, divides it into 256
   bins, and returns NumPy `int64` bin ids. It is NumPy-only.
-- SmolLM2 remains at its native 49,152-row vocabulary. The optional AR
+- SmolLM2 remains at its native 49,152-row vocabulary. The shipped AR
   head uses a separate 256-entry action embedding table indexed by bin id.
-- One label is `[H, D] = [16, 6]`. The shipped parallel head keeps this
-  shape and returns logits `[B, H, D, bins]`; only the optional AR branch
-  flattens the grid into 96 scalar action tokens. Padding is expanded over
+- One label is `[H, D] = [16, 6]`. The shipped AR head flattens this grid
+  in time-major order and generates 96 scalar action tokens. The parallel
+  baseline keeps 16 timestep positions, uses six categorical readouts per
+  position, and returns logits `[B, H, D, bins]`. Padding is expanded over
   the six controls and excluded from the loss before averaging.
 - Chapter 3 receives raw `[0,1]` images `[B,2,3,H,W]`, padded native text
   ids, a text attention mask, and normalized state `[B,6]`. It owns image
   resizing, direct multimodal concatenation, and compact position ids.
 - The six-value proprioceptive vector becomes one observation token. The
-  parallel head follows SmolVLA's vector layout: one action position per
-  future timestep, with a readout covering all controls. Chapter 4 makes
-  that readout categorical (`D x bins`) instead of reproducing SmolVLA's
-  continuous flow-matching objective.
-- The parallel head extends Chapter 3's observation prefix with `H` learned
+  shipped AR head extends the observation prefix one scalar action token
+  at a time and conditions each prediction on earlier selected bins.
+- The parallel baseline follows SmolVLA's vector layout: one action
+  position per future timestep, with a categorical `D x bins` readout.
+  It extends Chapter 3's observation prefix with `H` learned
   576-wide action positions and contextualizes the suffix with a custom
   bidirectional action mask. Constructing it switches the shared backbone
   to eager attention, which is the only implementation guaranteed to accept
@@ -335,7 +339,7 @@ exposed through `SO101Follower.send_action` and dataset episodes through
 
 The exported-chunk command is a bounded hardware smoke test, not a
 physical-robot deployment recipe. It executes one already-decoded chunk
-without refreshing camera/state observations. Section 4.7.4's
-closed-loop rollout remains a manuscript `<TODO>`; the `sim` extra is
-reserved for it, and task success still requires repeated closed-loop
-episodes with a stated success criterion.
+without refreshing camera/state observations. The manuscript's open-loop
+diagnostics do not establish task success. That claim still requires
+repeated closed-loop episodes with a stated success criterion; the `sim`
+extra is reserved for that evaluation.

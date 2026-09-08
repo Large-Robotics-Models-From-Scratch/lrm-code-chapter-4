@@ -43,7 +43,7 @@ def export_action_chunk(
     fps: int = 30,
     action_min=None,
     action_max=None,
-    source: str = "Chapter 4 parallel policy",
+    source: str = "Chapter 4 autoregressive policy",
 ) -> Path:
     """Write one denormalized ``[16, 6]`` chunk for local playback."""
     chunk = _as_chunk(actions)

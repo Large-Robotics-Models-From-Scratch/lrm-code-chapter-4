@@ -1,8 +1,11 @@
 # Chapter 4 project guidance
 
-The sole Chapter 4 design authority is:
+The sole Chapter 4 design authority is the v13 manuscript copy:
 
-`../lrm-book/chapter_4/manuscript/chapter_4.md`
+`https://docs.google.com/document/d/1oSaT2sR271OWgaZEJhyUx4DG6Knu0GbOV0vZJcqjEmo/edit`
+
+The local Markdown manuscript can lag this document and is not an
+architecture authority.
 
 Use the Chapter 2 and Chapter 3 repositories only for their live callable
 APIs and tensor contracts. Do not infer Chapter 4 requirements from old
@@ -16,5 +19,8 @@ Implementation invariants derived from the manuscript:
 - `ActionTokenizer` remains NumPy-only.
 - The three public heads are `OneshotActionHead`,
   `AutoregressiveActionHead`, and `ParallelDecodeActionHead`.
-- The parallel head is the Listings 4.6 through 4.8 main path.
+- `AutoregressiveActionHead` is the shipped head and the default CLI path.
+- The AR head is the Listings 4.4 through 4.8 main path.
+- `ParallelDecodeActionHead` is the Listing 4.3 comparison baseline. It
+  uses 16 timestep slots and six categorical readouts per slot.
 - Tests assert shapes, dtypes, grid order, padding, and vocabulary reuse.

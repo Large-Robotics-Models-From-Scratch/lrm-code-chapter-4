@@ -286,7 +286,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Regenerate Chapter 4 figures from a checkpoint.",
     )
     parser.add_argument("checkpoint")
-    parser.add_argument("--head", default="parallel", choices=HEAD_NAMES)
+    parser.add_argument(
+        "--head", default="autoregressive", choices=HEAD_NAMES
+    )
     parser.add_argument("--output-dir", default="figures")
     parser.add_argument("--dataset-id", default=None)
     parser.add_argument("--batch-size", type=int, default=8)

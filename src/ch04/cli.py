@@ -273,9 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--head",
         nargs="+",
-        default=["parallel"],
+        default=["autoregressive"],
         choices=[*HEAD_NAMES, "all"],
-        help="heads to train; each gets a fresh Chapter 3 backbone",
+        help=(
+            "heads to train; defaults to the shipped autoregressive "
+            "head, and each gets a fresh Chapter 3 backbone"
+        ),
     )
     parser.add_argument("--dataset-id", default=None)
     parser.add_argument("--steps", type=int, default=20_000)

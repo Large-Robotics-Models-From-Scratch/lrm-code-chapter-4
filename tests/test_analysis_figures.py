@@ -564,7 +564,7 @@ def test_cli_parser_defaults_and_all_expansion():
     from ch04.cli import build_parser
 
     arguments = build_parser().parse_args([])
-    assert arguments.head == ["parallel"]
+    assert arguments.head == ["autoregressive"]
     assert arguments.steps == 20_000
     assert arguments.learning_rate == 1e-4
     assert arguments.backbone_learning_rate == 1e-5
@@ -584,6 +584,9 @@ def test_figures_parser_accepts_a_checkpoint_and_head():
     assert arguments.checkpoint == "ckpt/best.pt"
     assert arguments.head == "autoregressive"
     assert arguments.dims == [1, 2]
+
+    defaults = build_parser().parse_args(["ckpt/best.pt"])
+    assert defaults.head == "autoregressive"
 
 
 # --- section 4.6: measured inference cost ---------------------------------
