@@ -84,6 +84,11 @@ consecutive timesteps -- and the trailing sentence dropped or inverted.
 `analysis.joint_mismatch_samples` still runs and its docstring now says this
 explicitly, so the figure code is not broken, only the axis choice.
 
+The replacement figure needs no new code: `diagnostics.plot_temporal_traces`
+already renders sampled bins for one control across a chunk, one panel per
+head, annotated with mean step-to-step change. It was written for exactly the
+sentence that follows the figure and is unaffected by this change.
+
 The section 4.4.1 "Where independence breaks: joint mismatch" discussion should
 survive but narrow its claim: the one-shot head's failure spans both axes; the
 AR head repairs the temporal axis only. Chapter 5's flow matching is still the
