@@ -653,3 +653,152 @@ def test_training_bounds_the_validation_rollout(
     # One validation tick: six batches of loss, two of them rolled out.
     assert calls["n"] == 2
     assert history[-1]["validation_accuracy"] is not None
+
+
+def _fake_validation(loss, mae_in_std, accuracy):
+    return {
+        "loss": loss,
+        "teacher_forced_accuracy": 0.5,
+        "teacher_forced_mae_in_std": 0.5,
+        "teacher_forced_accuracy_by_control": [0.5] * 6,
+        "teacher_forced_mae_in_std_by_control": [0.5] * 6,
+        "accuracy": accuracy,
+        "mae_in_std": mae_in_std,
+        "rollout_token_count": 96,
+    }
+
+
+def _train_three_validations(
+    fake_backbone, fake_stats, tmp_path, sequence, **kwargs
+):
+    """Run three checkpointed steps against a scripted validation."""
+    import ch04.train as train_module
+    from ch04 import ParallelDecodeActionHead
+
+    scripted = iter(sequence)
+    original = train_module.held_out_metrics
+    train_module.held_out_metrics = lambda *a, **k: next(scripted)
+    try:
+        head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+        batch = _batch()
+        train_action_head(
+            head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+            total_steps=3, warmup_steps=0, log_every=1,
+            checkpoint_every=1, validate_every=1,
+            checkpoint_dir=tmp_path, validation_loader=[batch], **kwargs,
+        )
+    finally:
+        train_module.held_out_metrics = original
+    return torch.load(tmp_path / "best.pt", weights_only=False)
+
+
+def test_best_checkpoint_follows_the_rollout_not_the_cross_entropy(
+    fake_backbone, fake_stats, tmp_path
+):
+    # Teacher-forced CE improves at every step while the grid the head
+    # generates for itself gets worse after step 1 -- the autoregressive
+    # failure mode. The old criterion would pick step 3.
+    sequence = [
+        _fake_validation(loss=3.0, mae_in_std=0.40, accuracy=0.60),
+        _fake_validation(loss=2.0, mae_in_std=0.25, accuracy=0.75),
+        _fake_validation(loss=1.0, mae_in_std=0.55, accuracy=0.50),
+    ]
+    best = _train_three_validations(
+        fake_backbone, fake_stats, tmp_path, sequence
+    )
+    assert best["step"] == 2
+    assert best["best_selection_metric"] == "rollout_mae"
+    assert best["best_selection_value"] == pytest.approx(0.25)
+    # The cross-entropy of the winning step is still recorded.
+    assert best["best_validation_loss"] == pytest.approx(2.0)
+
+
+def test_checkpoint_selection_can_use_accuracy_or_the_old_loss(
+    fake_backbone, fake_stats, tmp_path
+):
+    sequence = [
+        _fake_validation(loss=3.0, mae_in_std=0.40, accuracy=0.60),
+        _fake_validation(loss=2.0, mae_in_std=0.25, accuracy=0.75),
+        _fake_validation(loss=1.0, mae_in_std=0.55, accuracy=0.50),
+    ]
+    best = _train_three_validations(
+        fake_backbone, fake_stats, tmp_path, list(sequence),
+        checkpoint_selection="rollout_accuracy",
+    )
+    assert best["step"] == 2
+    assert best["best_selection_value"] == pytest.approx(0.75)
+
+    best = _train_three_validations(
+        fake_backbone, fake_stats, tmp_path, list(sequence),
+        checkpoint_selection="validation_loss",
+    )
+    assert best["step"] == 3
+    assert best["best_selection_value"] == pytest.approx(1.0)
+
+
+def test_unscorable_validation_leaves_the_best_checkpoint_alone(
+    fake_backbone, fake_stats, tmp_path
+):
+    # A rollout that was skipped reports NaN. That must not overwrite a
+    # ranked checkpoint, and must not count as an improvement either.
+    sequence = [
+        _fake_validation(loss=3.0, mae_in_std=0.30, accuracy=0.60),
+        _fake_validation(loss=2.0, mae_in_std=float("nan"),
+                         accuracy=float("nan")),
+        _fake_validation(loss=1.0, mae_in_std=float("nan"),
+                         accuracy=float("nan")),
+    ]
+    best = _train_three_validations(
+        fake_backbone, fake_stats, tmp_path, sequence
+    )
+    assert best["step"] == 1
+    assert best["best_selection_value"] == pytest.approx(0.30)
+
+
+def test_selection_rejects_unknown_and_unscorable_configurations(
+    fake_backbone, fake_stats, tmp_path
+):
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = _batch()
+    common = dict(
+        total_steps=1, warmup_steps=0, log_every=1, checkpoint_every=1,
+        checkpoint_dir=tmp_path, validation_loader=[batch],
+    )
+    with pytest.raises(ValueError, match="checkpoint_selection must be"):
+        train_action_head(
+            head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+            checkpoint_selection="held_out_vibes", **common,
+        )
+    # Asking to rank on a rollout that is switched off would silently
+    # never write best.pt.
+    with pytest.raises(
+        ValueError, match="validation_rollout_batches > 0"
+    ):
+        train_action_head(
+            head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+            validation_rollout_batches=0, **common,
+        )
+
+
+def test_resuming_under_a_different_selection_criterion_is_refused(
+    fake_backbone, fake_stats, tmp_path
+):
+    from ch04 import ParallelDecodeActionHead
+
+    head = ParallelDecodeActionHead(fake_backbone, d_embed=12)
+    batch = _batch()
+    train_action_head(
+        head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+        total_steps=1, warmup_steps=0, log_every=1, checkpoint_every=1,
+        checkpoint_dir=tmp_path, validation_loader=[batch],
+    )
+    with pytest.raises(ValueError, match="resume configuration differs"):
+        train_action_head(
+            head, fake_backbone, [batch], fake_stats, _tokenizer(), "cpu",
+            total_steps=2, warmup_steps=0, log_every=1, checkpoint_every=1,
+            checkpoint_dir=tmp_path, validation_loader=[batch],
+            resume_from=tmp_path / "latest.pt",
+            checkpoint_selection="validation_loss",
+        )

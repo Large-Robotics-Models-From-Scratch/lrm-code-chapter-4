@@ -31,6 +31,39 @@ def _make_summary_writer(log_dir: str | Path, purge_step: int | None):
     return SummaryWriter(log_dir=str(log_dir), purge_step=purge_step)
 
 
+# How ``best.pt`` is chosen. Selecting on teacher-forced cross-entropy
+# picks the checkpoint that best fits the objective, which is not the one
+# that deploys best: an autoregressive head's held-out CE keeps improving
+# while the grid it generates for itself drifts further from the expert.
+# The rollout entries score what each head actually emits, so they target
+# the numbers section 4.6 reports.
+SELECTION_METRICS = {
+    # name: (held_out_metrics key, higher_is_better)
+    "rollout_mae": ("mae_in_std", False),
+    "rollout_accuracy": ("accuracy", True),
+    "validation_loss": ("loss", False),
+}
+
+
+def _selection_value(
+    selection: str, validation_metrics: Mapping[str, object] | None
+) -> float | None:
+    """Return the comparable value for ``selection``, or ``None``.
+
+    ``None`` means "cannot be scored at this step" -- no validation ran,
+    or the rollout was skipped -- and leaves ``best.pt`` untouched rather
+    than silently falling back to a different criterion.
+    """
+    if validation_metrics is None:
+        return None
+    key, _ = SELECTION_METRICS[selection]
+    value = validation_metrics.get(key)
+    if value is None:
+        return None
+    value = float(value)
+    return None if math.isnan(value) else value
+
+
 def _checkpoint_array_equal(saved, current) -> bool:
     """Compare checkpoint metadata without inheriting its load device."""
     saved_tensor = torch.as_tensor(saved).detach().cpu()
@@ -522,6 +555,8 @@ def _checkpoint_payload(
     validation_loss: float | None,
     validation_metrics: Mapping[str, object] | None,
     best_validation_loss: float,
+    best_selection_metric: str,
+    best_selection_value: float | None,
     history: list[dict[str, float]],
     stats,
     tokenizer,
@@ -535,6 +570,8 @@ def _checkpoint_payload(
         "validation_loss": validation_loss,
         "validation_metrics": validation_metrics,
         "best_validation_loss": best_validation_loss,
+        "best_selection_metric": best_selection_metric,
+        "best_selection_value": best_selection_value,
         "history": history,
         "normalization": stats,
         "tokenizer": {
@@ -593,12 +630,24 @@ def train_action_head(
     validate_every: int | None = None,
     validation_batches: int | None = 32,
     validation_rollout_batches: int | None = 8,
+    checkpoint_selection: str = "rollout_mae",
     tensorboard_log_dir: str | Path | None = None,
 ) -> list[dict[str, float]]:
     """Train a factorized, autoregressive, or parallel action head.
 
     ``latest.pt`` is rewritten every ``checkpoint_every`` steps and
-    ``best.pt`` whenever the held-out loss improves. If
+    ``best.pt`` whenever ``checkpoint_selection`` improves. It defaults to
+    ``"rollout_mae"``, the open-loop Control MAE of the grid each head
+    generates for itself, because that is the quantity section 4.6
+    reports. Selecting on ``"validation_loss"`` -- teacher-forced
+    cross-entropy, the old behaviour -- systematically favours a
+    checkpoint that is past its deployment peak for the autoregressive
+    head, whose CE keeps falling while its own rollouts drift. See
+    :data:`SELECTION_METRICS` for the alternatives.
+
+    A rollout criterion is scored on ``validation_rollout_batches``
+    batches, not the wider ``validation_batches`` pass, so it is the
+    noisier signal of the two; keep the two counts in proportion. If
     ``checkpoint_mirror_dir`` is set, each file is written to fast local
     storage first and then copied atomically to that durable location.
     Mirror failures warn rather than discarding the local checkpoint or
@@ -670,14 +719,31 @@ def train_action_head(
         "grad_clip": grad_clip,
         "horizon": getattr(head, "horizon", None),
         "action_dim": getattr(head, "action_dim", None),
+        "checkpoint_selection": checkpoint_selection,
     }
     history: list[dict[str, float]] = []
     step = 0
     best_validation = float("inf")
+    best_selection: float | None = None
     if validate_every is None:
         validate_every = checkpoint_every
     if validate_every < 0:
         raise ValueError("validate_every must be non-negative")
+    if checkpoint_selection not in SELECTION_METRICS:
+        raise ValueError(
+            "checkpoint_selection must be one of "
+            f"{sorted(SELECTION_METRICS)}"
+        )
+    if (
+        checkpoint_selection.startswith("rollout_")
+        and validation_rollout_batches == 0
+    ):
+        # Otherwise every step scores as unrankable and best.pt is never
+        # written, which is a silent failure rather than a cheap run.
+        raise ValueError(
+            f"checkpoint_selection={checkpoint_selection!r} needs "
+            "validation_rollout_batches > 0"
+        )
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device)
         if checkpoint.get("config") != config:
@@ -703,6 +769,11 @@ def train_action_head(
         )
         if saved_best is not None:
             best_validation = float(saved_best)
+        # The config guard above already rejects a checkpoint written
+        # under a different criterion, so this value is comparable.
+        saved_selection = checkpoint.get("best_selection_value")
+        if saved_selection is not None:
+            best_selection = float(saved_selection)
 
     writer = None
     if tensorboard_log_dir is not None:
@@ -951,12 +1022,27 @@ def train_action_head(
                         )
                 print(message)
             if should_checkpoint:
-                best_updated = (
-                    validation is not None
-                    and validation < best_validation
+                selection_value = _selection_value(
+                    checkpoint_selection, validation_metrics
+                )
+                _, higher_is_better = SELECTION_METRICS[
+                    checkpoint_selection
+                ]
+                best_updated = selection_value is not None and (
+                    best_selection is None
+                    or (
+                        selection_value > best_selection
+                        if higher_is_better
+                        else selection_value < best_selection
+                    )
                 )
                 if best_updated:
-                    best_validation = validation
+                    best_selection = selection_value
+                    # Keep recording the cross-entropy of whichever step
+                    # won, so best_validation_loss keeps its meaning for
+                    # readers and for resume.
+                    if validation is not None:
+                        best_validation = validation
                 payload = _checkpoint_payload(
                     step=completed_step,
                     head=head,
@@ -966,6 +1052,8 @@ def train_action_head(
                     validation_loss=validation,
                     validation_metrics=validation_metrics,
                     best_validation_loss=best_validation,
+                    best_selection_metric=checkpoint_selection,
+                    best_selection_value=best_selection,
                     history=history,
                     stats=stats,
                     tokenizer=tokenizer,

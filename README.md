@@ -106,8 +106,8 @@ configuration or tokenizer bounds differ. The optional
 atomically copies each head's `latest.pt`, improved `best.pt`, and requested
 snapshots to durable storage. A mirror outage emits a warning without
 interrupting training; the next checkpoint retries `latest.pt`. Checkpoints
-also carry metric history and the best held-out loss, so resumed loss and
-per-joint curves continue from the earlier session.
+also carry metric history, the selection criterion and its best value, so
+resumed loss and per-joint curves continue from the earlier session.
 
 The reporting follows the useful part of OpenVLA's training loop:
 categorical loss is paired with exact action-token accuracy and decoded
@@ -205,7 +205,8 @@ imports, and drops cached chapter modules.
    from `/content/ch04-checkpoints/tensorboard`. Training writes locally
    first, then atomically mirrors checkpoint files and report PNGs to
    `MyDrive/<DRIVE_FOLDER>/<DRIVE_RUN_NAME>/<head>/`. `latest.pt` is replaced
-   every 1,000 steps; `best.pt` changes only when held-out loss improves.
+   every 1,000 steps; `best.pt` changes only when the open-loop Control
+   MAE of that head's own rollout improves.
 4. After a disconnect, start a GPU runtime, use the same Drive folder and
    run name, set `RESUME_FROM_GOOGLE_DRIVE = True`, and rerun setup, data,
    configuration, and the relevant trainer cell. Resume restores the model,
