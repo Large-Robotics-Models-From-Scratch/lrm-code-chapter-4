@@ -816,3 +816,73 @@ def test_tradeoff_frontier_treats_control_mae_as_lower_is_better():
         if line.get_label() == "non-dominated frontier"
     ]
     plt.close(axis.figure)
+
+
+def test_pair_mutual_information_separates_coupled_from_independent():
+    from ch04.analysis import normalized_pair_mutual_information
+
+    rng = np.random.default_rng(0)
+    diagonal = rng.integers(0, 256, size=400)
+    coupled = np.stack([diagonal, diagonal], axis=1)
+    independent = rng.integers(0, 256, size=(400, 2))
+
+    # y = x is fully determined once the histogram is coarsened.
+    assert normalized_pair_mutual_information(coupled) == pytest.approx(
+        1.0, abs=1e-9
+    )
+    # Independent draws sit near zero; the estimator is positively biased
+    # on a finite sample, so allow headroom rather than assert 0.
+    assert normalized_pair_mutual_information(independent) < 0.25
+
+    with pytest.raises(ValueError, match=r"shape \[N, 2\]"):
+        normalized_pair_mutual_information(np.zeros((4, 3)))
+    with pytest.raises(ValueError, match="at least four"):
+        normalized_pair_mutual_information(np.zeros((2, 2)))
+    with pytest.raises(ValueError, match="coarse_bins"):
+        normalized_pair_mutual_information(
+            np.zeros((8, 2)), n_bins=8, coarse_bins=16
+        )
+
+
+def test_off_support_rate_is_reported_against_a_uniform_baseline():
+    from ch04.analysis import off_support_chance, off_support_rate
+
+    # The real run: only quadrant 2 (high pan, low roll) is unsupported,
+    # and its splits are far off centre, so a uniform sampler already
+    # posts about 8 percent.
+    splits = (32.0, 23.5)
+    supported = np.array([True, True, False, True])
+    chance = off_support_chance(splits, supported, n_bins=256)
+    assert chance == pytest.approx((224 / 256) * (24 / 256))
+    assert 0.07 < chance < 0.09
+
+    # Every pair placed squarely inside the forbidden corner.
+    forbidden = np.tile(np.array([200, 5]), (10, 1))
+    assert off_support_rate(forbidden, splits, supported) == 1.0
+    # ... and none, on the supported diagonal.
+    diagonal = np.stack([np.arange(40, 80), np.arange(40, 80)], axis=1)
+    assert off_support_rate(diagonal, splits, supported) == 0.0
+
+    # A uniform sampler lands on the analytic baseline.
+    rng = np.random.default_rng(7)
+    uniform = rng.integers(0, 256, size=(40_000, 2))
+    assert off_support_rate(uniform, splits, supported) == pytest.approx(
+        chance, abs=0.01
+    )
+
+    with pytest.raises(ValueError, match="four flags"):
+        off_support_chance(splits, np.array([True, False]))
+    with pytest.raises(ValueError, match="four flags"):
+        off_support_rate(uniform, splits, np.array([True, False]))
+
+
+def test_all_quadrants_supported_leaves_no_chance_of_missing():
+    from ch04.analysis import off_support_chance
+
+    assert off_support_chance(
+        (128.0, 128.0), np.array([True, True, True, True])
+    ) == 0.0
+    # A central split with one forbidden quadrant is the fair case.
+    assert off_support_chance(
+        (128.0, 128.0), np.array([True, True, False, True])
+    ) == pytest.approx(0.25)

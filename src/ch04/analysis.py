@@ -318,35 +318,51 @@ def collect_generated_pairs(
     max_batches: int | None = None,
     strategy: str = "sample",
     temperature: float = 1.0,
+    n_samples: int = 1,
 ) -> np.ndarray:
     """Collect deployed bin pairs across held-out observations.
 
     Unlike a teacher-forced outer product, this follows each head's real
     generation path.  In particular, the autoregressive second cell is
     conditioned on the model's own earlier sampled cells.
+
+    ``n_samples`` draws that many grids per observation.  One draw per
+    observation leaves a rate computed over a few hundred pairs, where a
+    difference of a few points between two heads is a handful of samples;
+    raising it tightens the estimate at a proportional cost, which for the
+    autoregressive head means another ``H * D`` serial steps per draw.
     """
     from ch04.decoding import action_head_bins
 
+    if n_samples < 1:
+        raise ValueError("n_samples must be positive")
     pairs = []
     first, second = dims
     with evaluation_mode(head), evaluation_mode(backbone):
         for batch in _batches(loader, max_batches):
             model_inputs = prepare_batch(batch, stats, device, backbone)
             bins, pad = action_targets(batch, stats, tokenizer, device)
-            predicted = action_head_bins(
-                head,
-                backbone,
-                model_inputs,
-                strategy=strategy,
-                temperature=temperature,
-            )
-            if not 0 <= timestep < predicted.shape[1]:
+            if not 0 <= timestep < pad.shape[1]:
                 raise IndexError("timestep is outside the action horizon")
-            controls = predicted.shape[2]
+            controls = pad.shape[2]
             if not 0 <= first < controls or not 0 <= second < controls:
                 raise IndexError("control is outside the action grid")
             keep = ~pad[:, timestep, first] & ~pad[:, timestep, second]
-            if bool(keep.any()):
+            if not bool(keep.any()):
+                continue
+            for _ in range(n_samples):
+                predicted = action_head_bins(
+                    head,
+                    backbone,
+                    model_inputs,
+                    strategy=strategy,
+                    temperature=temperature,
+                )
+                if predicted.shape != pad.shape:
+                    raise ValueError(
+                        "head produced a grid that does not match the "
+                        "target shape"
+                    )
                 pairs.append(
                     predicted[keep, timestep][:, [first, second]]
                     .cpu()
@@ -355,6 +371,102 @@ def collect_generated_pairs(
     if not pairs:
         raise ValueError("the loader produced no valid generated pairs")
     return np.concatenate(pairs)
+
+
+def normalized_pair_mutual_information(
+    pairs: np.ndarray,
+    n_bins: int = 256,
+    coarse_bins: int = 16,
+) -> float:
+    """Coupling between two controls, in ``[0, 1]``.
+
+    Zero means the two bins were drawn independently; one means either
+    determines the other. Coarsening keeps a sparse 256-way histogram
+    from making every pair look dependent.
+
+    This is the quantity :func:`select_coupled_control_pair` maximizes to
+    choose the pair, so running it on a head's *generated* pairs is
+    directly comparable with the expert's own score. The off-support rate
+    cannot do that job: it collapses the grid to four quadrants, so a head
+    that scatters mass across the largest supported quadrant scores
+    perfectly while reproducing none of the expert's coupling.
+    """
+    values = np.asarray(pairs)
+    if values.ndim != 2 or values.shape[1] != 2:
+        raise ValueError("pairs must have shape [N, 2]")
+    if values.shape[0] < 4:
+        raise ValueError("at least four pairs are required")
+    if not 2 <= coarse_bins <= n_bins:
+        raise ValueError("coarse_bins must lie in [2, n_bins]")
+    coarse = np.clip(
+        np.asarray(values, dtype=np.int64) * coarse_bins // n_bins,
+        0,
+        coarse_bins - 1,
+    )
+    joint = np.zeros((coarse_bins, coarse_bins), dtype=np.float64)
+    np.add.at(joint, (coarse[:, 0], coarse[:, 1]), 1.0)
+    joint /= joint.sum()
+    px, py = joint.sum(axis=1), joint.sum(axis=0)
+    expected = px[:, None] * py[None, :]
+    occupied = joint > 0
+    mutual_information = float(
+        np.sum(joint[occupied] * np.log(
+            joint[occupied] / expected[occupied]
+        ))
+    )
+    entropy_x = float(-np.sum(px[px > 0] * np.log(px[px > 0])))
+    entropy_y = float(-np.sum(py[py > 0] * np.log(py[py > 0])))
+    return mutual_information / max(min(entropy_x, entropy_y), 1e-12)
+
+
+def off_support_rate(
+    pairs: np.ndarray,
+    splits: tuple[float, float],
+    supported_quadrants: np.ndarray,
+) -> float:
+    """Fraction of pairs in a quadrant the expert never demonstrated."""
+    values = np.asarray(pairs)
+    if values.ndim != 2 or values.shape[1] != 2:
+        raise ValueError("pairs must have shape [N, 2]")
+    supported = np.asarray(supported_quadrants, dtype=bool)
+    if supported.shape != (4,):
+        raise ValueError("supported_quadrants must hold four flags")
+    quadrant = (
+        (values[:, 0] >= splits[0]).astype(int) * 2
+        + (values[:, 1] >= splits[1]).astype(int)
+    )
+    return float(np.mean(~supported[quadrant]))
+
+
+def off_support_chance(
+    splits: tuple[float, float],
+    supported_quadrants: np.ndarray,
+    n_bins: int = 256,
+) -> float:
+    """The off-support rate of a head that samples bins uniformly.
+
+    Report it beside :func:`off_support_rate`. Three of the four
+    quadrants are usually supported and the splits are rarely central, so
+    the unsupported region can be a thin corner of the grid: an
+    off-support rate reads as a quality score when it is really a
+    comparison against this baseline. A head sitting on it carries no
+    information about the constraint at all.
+    """
+    supported = np.asarray(supported_quadrants, dtype=bool)
+    if supported.shape != (4,):
+        raise ValueError("supported_quadrants must hold four flags")
+    if n_bins < 2:
+        raise ValueError("n_bins must be at least two")
+    bins = np.arange(n_bins)
+    high = [float(np.mean(bins >= float(split))) for split in splits]
+    chance = 0.0
+    for index in range(4):
+        if supported[index]:
+            continue
+        first = high[0] if index // 2 else 1.0 - high[0]
+        second = high[1] if index % 2 else 1.0 - high[1]
+        chance += first * second
+    return chance
 
 
 def select_pair_mode_support(
@@ -466,31 +578,17 @@ def select_coupled_control_pair(
             keep = mask[:, timestep, first] & mask[:, timestep, second]
             if int(keep.sum()) < 4:
                 continue
-            x = np.clip(
-                targets[keep, timestep, first] * coarse_bins // n_bins,
-                0,
-                coarse_bins - 1,
-            ).astype(int)
-            y = np.clip(
-                targets[keep, timestep, second] * coarse_bins // n_bins,
-                0,
-                coarse_bins - 1,
-            ).astype(int)
-            joint = np.zeros((coarse_bins, coarse_bins), dtype=np.float64)
-            np.add.at(joint, (x, y), 1.0)
-            joint /= joint.sum()
-            px, py = joint.sum(axis=1), joint.sum(axis=0)
-            expected = px[:, None] * py[None, :]
-            occupied = joint > 0
-            mutual_information = float(
-                np.sum(joint[occupied] * np.log(
-                    joint[occupied] / expected[occupied]
-                ))
+            score = normalized_pair_mutual_information(
+                np.stack(
+                    (
+                        targets[keep, timestep, first],
+                        targets[keep, timestep, second],
+                    ),
+                    axis=1,
+                ),
+                n_bins=n_bins,
+                coarse_bins=coarse_bins,
             )
-            entropy_x = float(-np.sum(px[px > 0] * np.log(px[px > 0])))
-            entropy_y = float(-np.sum(py[py > 0] * np.log(py[py > 0])))
-            denominator = max(min(entropy_x, entropy_y), 1e-12)
-            score = mutual_information / denominator
             record = {
                 "dims": (first, second),
                 "score": score,
