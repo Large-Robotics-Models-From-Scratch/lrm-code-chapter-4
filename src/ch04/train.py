@@ -213,9 +213,9 @@ def action_metrics(
 
     Pass ``predicted_bins`` to score a grid the head actually generated.
     Without it the bins are taken from ``logits``, which for the
-    autoregressive head are teacher-forced: every cell would be scored with
-    the true earlier bins supplied, collapsing its decoded error toward the
-    quantization floor instead of measuring open-loop error.
+    autoregressive head are teacher-forced: every timestep would be scored
+    with the true earlier timesteps supplied, collapsing its error toward
+    the quantization floor instead of measuring open-loop error.
     """
     if (
         logits.shape[:-1] != target_bins.shape
@@ -296,7 +296,7 @@ def held_out_metrics(
     exact dataset-level number.
 
     ``rollout_batches`` bounds the decoded metrics separately, because an
-    autoregressive rollout costs ``H * D`` serial steps per batch and is
+    autoregressive rollout costs ``H`` serial steps per batch and is
     far more expensive than the teacher-forced pass. The returned
     ``rollout_batches_used`` records how many batches it covered, so a
     bounded decoded metric is never mistaken for a full-split one. Pass

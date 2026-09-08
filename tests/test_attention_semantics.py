@@ -168,7 +168,7 @@ def test_ar_generation_costs_one_serial_step_per_timestep(
 def test_ar_conditions_on_earlier_timesteps_only(
     fake_backbone, model_inputs
 ):
-    """Temporal causality: timestep t sees t-1 and earlier, nothing later."""
+    """Temporal causality: timestep t sees earlier ones, nothing later."""
     torch.manual_seed(0)
     head = AutoregressiveActionHead(
         fake_backbone, d_embed=12, horizon=4, action_dim=3
@@ -212,5 +212,5 @@ def test_ar_controls_within_a_timestep_are_independent(
 
     # Control 0's own bin does not reach its siblings at timestep 1.
     torch.testing.assert_close(left[:, 1], right[:, 1])
-    # It does reach the next timestep, which is where AR still earns its keep.
+    # It does reach the next timestep, where AR still earns its keep.
     assert not torch.allclose(left[:, 2], right[:, 2])

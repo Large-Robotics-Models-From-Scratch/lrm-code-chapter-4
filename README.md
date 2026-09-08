@@ -305,12 +305,17 @@ exposed through `SO101Follower.send_action` and dataset episodes through
 - The tokenizer clips each dimension to q01/q99, divides it into 256
   bins, and returns NumPy `int64` bin ids. It is NumPy-only.
 - SmolLM2 remains at its native 49,152-row vocabulary. The shipped AR
-  head uses a separate 256-entry action embedding table indexed by bin id.
-- One label is `[H, D] = [16, 6]`. The shipped AR head flattens this grid
-  in time-major order and generates 96 scalar action tokens. The parallel
-  baseline keeps 16 timestep positions, uses six categorical readouts per
-  position, and returns logits `[B, H, D, bins]`. Padding is expanded over
-  the six controls and excluded from the loss before averaging.
+  head uses a separate action embedding table with one row per
+  `(control, bin)` pair, `6 * 256 = 1,536` rows, so summing a timestep's
+  six lookups cannot confuse one control's bin with another's.
+- One label is `[H, D] = [16, 6]`. Both the shipped AR head and the
+  parallel baseline append 16 positions, one per future timestep, and use
+  six categorical readouts per position, returning logits
+  `[B, H, D, bins]`. They differ only in causal versus bidirectional
+  attention, and in whether a position carries a learned slot or the
+  realized bins of the previous timestep. AR inference therefore costs 16
+  serial steps, not 96. Padding is expanded over the six controls and
+  excluded from the loss before averaging.
 - Chapter 3 receives raw `[0,1]` images `[B,2,3,H,W]`, padded native text
   ids, a text attention mask, and normalized state `[B,6]`. It owns image
   resizing, direct multimodal concatenation, and compact position ids.

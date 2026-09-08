@@ -606,7 +606,7 @@ def test_measure_inference_flops_reports_work_and_serial_depth(
         assert values["flops"] > 0, f"{name} recorded no arithmetic"
         assert np.isfinite(values["flops"])
 
-    assert measured["autoregressive"]["serial_steps"] == 96
+    assert measured["autoregressive"]["serial_steps"] == 16
     assert measured["factorized"]["serial_steps"] == 1
     assert measured["parallel"]["serial_steps"] == 1
 
@@ -634,14 +634,14 @@ def test_tradeoff_plot_prefers_measured_flops_over_the_proxy():
     measured = {
         "factorized": {"flops": 2.0e9, "serial_steps": 1},
         "parallel": {"flops": 6.0e9, "serial_steps": 1},
-        "autoregressive": {"flops": 7.0e9, "serial_steps": 96},
+        "autoregressive": {"flops": 7.0e9, "serial_steps": 16},
     }
     figure = plot_quality_compute_tradeoff(summary, flops=measured)
     axis = figure.axes[0]
     assert "FLOPs" in axis.get_xlabel()
     assert "proxy" not in axis.get_xlabel()
     labels = [text.get_text() for text in axis.texts]
-    assert any("96 serial" in label for label in labels), labels
+    assert any("16 serial" in label for label in labels), labels
     plt.close(figure)
 
 
@@ -663,7 +663,7 @@ def test_measure_inference_latency_ranks_serial_decoding_slowest(
         assert values["p10_ms"] <= values["latency_ms"] <= values["p90_ms"]
         assert values["device"] == "cpu"
 
-    assert measured["autoregressive"]["serial_steps"] == 96
+    assert measured["autoregressive"]["serial_steps"] == 16
     # 96 dependent steps against one pass: the margin is large enough that
     # this ordering does not depend on a quiet machine.
     assert (
@@ -697,14 +697,14 @@ def test_tradeoff_plot_prefers_latency_over_flops_and_proxy():
     }
     flops = {
         "parallel": {"flops": 6.0e9, "serial_steps": 1},
-        "autoregressive": {"flops": 4.8e9, "serial_steps": 96},
+        "autoregressive": {"flops": 4.8e9, "serial_steps": 16},
     }
     latency = {
         "parallel": {
             "latency_ms": 12.0, "serial_steps": 1, "device": "cuda",
         },
         "autoregressive": {
-            "latency_ms": 320.0, "serial_steps": 96, "device": "cuda",
+            "latency_ms": 320.0, "serial_steps": 16, "device": "cuda",
         },
     }
     figure = plot_quality_compute_tradeoff(

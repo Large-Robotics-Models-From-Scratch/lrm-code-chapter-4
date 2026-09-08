@@ -23,4 +23,11 @@ Implementation invariants derived from the manuscript:
 - The AR head is the Listings 4.4 through 4.8 main path.
 - `ParallelDecodeActionHead` is the Listing 4.3 comparison baseline. It
   uses 16 timestep slots and six categorical readouts per slot.
+- Both append 16 timestep positions: SmolVLA action-suffix granularity, so
+  head-to-head cost numbers are not confounded by suffix length. AR serial
+  depth is `H` (16), not `H * D`; read it from `head.serial_steps`, never
+  from `head.grid`, which counts target cells.
+- The AR head conditions across time only. A timestep's six controls are
+  decoded from one hidden state and are conditionally independent, so a
+  same-timestep control pair does not separate AR from the parallel head.
 - Tests assert shapes, dtypes, grid order, padding, and vocabulary reuse.

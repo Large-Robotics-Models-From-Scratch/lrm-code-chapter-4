@@ -127,8 +127,9 @@ def sample_action_grids(
     """Draw complete grids while preserving each head's dependencies.
 
     Factorized and parallel cells are sampled from their one-pass logits.
-    Autoregressive grids are generated causally, so later draws condition on
-    the bins sampled earlier in the same grid.
+    Autoregressive grids are generated causally over time, so each timestep
+    conditions on the bins sampled at earlier timesteps. A timestep's own
+    controls are drawn together and do not condition on one another.
     """
     if n_samples < 1:
         raise ValueError("n_samples must be positive")

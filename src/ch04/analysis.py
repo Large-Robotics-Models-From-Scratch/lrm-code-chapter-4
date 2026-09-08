@@ -251,8 +251,10 @@ def collect_joint_logit_mass(
 
     This uses softmax probabilities directly rather than estimating them
     with sampled action grids. For autoregressive heads the logits are
-    teacher-forced, so the later cell is conditioned on each frame's
-    demonstrated preceding cells.
+    teacher-forced, so each timestep is conditioned on the frame's
+    demonstrated earlier timesteps. Both cells here share one timestep, and
+    the head decodes a timestep's controls from a single hidden state, so
+    that conditioning does not reach across the pair.
     """
     total = None
     examples = 0
@@ -322,8 +324,9 @@ def collect_generated_pairs(
     """Collect deployed bin pairs across held-out observations.
 
     Unlike a teacher-forced outer product, this follows each head's real
-    generation path.  In particular, the autoregressive second cell is
-    conditioned on the model's own earlier sampled cells.
+    generation path.  The autoregressive head conditions each timestep on
+    the timesteps it already sampled; within one timestep its controls are
+    drawn together, so a same-timestep pair carries no extra conditioning.
     """
     from ch04.decoding import action_head_bins
 
@@ -516,8 +519,12 @@ def joint_mismatch_samples(
 ) -> dict[str, np.ndarray]:
     """Figure 4.9 draws: one ``[N, 2]`` bin-pair array per head.
 
-    Each head samples through its own inference path, so the
-    autoregressive pairs carry the conditioning the parallel heads lack.
+    Each head samples through its own inference path. Note that a
+    same-timestep pair no longer separates the heads: since the
+    autoregressive head moved to timestep tokens, its controls within a
+    timestep are as independent as the parallel head's. Pass ``dims`` and
+    ``timestep`` that straddle *consecutive timesteps* to see the
+    conditioning the parallel heads lack.
     """
     first, second = dims
     samples: dict[str, np.ndarray] = {}
@@ -820,13 +827,17 @@ def measure_inference_flops(
 
     FLOPs severely understate the autoregressive head, because a FLOP count
     is blind to the dependency graph: one wide pass is a compute-bound GEMM,
-    while 96 single-token steps are memory-bound GEMVs that cannot overlap.
-    Measured on the real Chapter 3 backbone (SmolLM2-135M, 399-token
-    prefix), the autoregressive head costs 1.11x the arithmetic of the
-    bidirectional head but 17x its GPU latency; the shared prefill dominates
-    both FLOP counts and hides the difference. In small configurations the
-    gap can even reverse sign, since cached decoding recomputes no
-    projections and skips the masked half of the causal attention matrix.
+    while single-token decode steps are memory-bound GEMVs that cannot
+    overlap. Measured on the real Chapter 3 backbone (SmolLM2-135M, 576
+    wide, 405-token prefix, batch 1, Apple MPS), the autoregressive head
+    costs 0.996x the arithmetic of the bidirectional head and 3.0x its GPU
+    latency: 169.3 against 170.0 GFLOPs, but 370 against 124 ms.
+
+    The FLOP count does not merely compress that gap, it *inverts its sign*
+    and calls the slower head cheaper. Cached decoding reuses stored keys
+    and values, so it recomputes no projections and skips the masked half
+    of the causal attention matrix, while the shared 405-token prefill
+    dominates both totals and hides what is left.
     Use :func:`measure_inference_latency` for the trade-off axis and treat
     ``flops`` as a lower bound recorded alongside ``serial_steps``.
     """
@@ -848,7 +859,7 @@ def measure_inference_flops(
             action_head_bins(head, backbone, selected, strategy="argmax")
         measured[name] = {
             "flops": float(counter.get_total_flops()),
-            "serial_steps": int(getattr(head, "grid", 1))
+            "serial_steps": int(getattr(head, "serial_steps", 1))
             if hasattr(head, "generate")
             else 1,
         }
@@ -894,7 +905,7 @@ def measure_inference_latency(
     )
     device = torch.device(selected[0].device)
     # Both CUDA and MPS dispatch asynchronously: without a barrier the
-    # timer measures how fast work was *queued*, which would make the 96
+    # timer measures how fast work was *queued*, which would make the
     # dependent decode steps look nearly free.
     if device.type == "cuda":
         synchronize = torch.cuda.synchronize
@@ -935,7 +946,7 @@ def measure_inference_latency(
             "p90_ms": float(ordered[-1])
             if repeats < 10
             else float(np.percentile(ordered, 90)),
-            "serial_steps": int(getattr(head, "grid", 1))
+            "serial_steps": int(getattr(head, "serial_steps", 1))
             if hasattr(head, "generate")
             else 1,
             "device": device_label,

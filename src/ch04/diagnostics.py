@@ -1285,9 +1285,10 @@ def plot_quality_compute_tradeoff(
     :func:`ch04.analysis.measure_inference_latency`, then ``flops``, then an
     implementation-independent schedule proxy. Prefer latency: a FLOP count
     is blind to the dependency graph and is dominated by the shared
-    observation prefill, so it compresses the autoregressive head's measured
-    17x GPU latency penalty into 1.11x the arithmetic. Every point is
-    annotated with its serial decode depth.
+    observation prefill, so it reports the autoregressive head's measured
+    3.0x GPU latency penalty as 0.996x the arithmetic -- not a compressed
+    gap but an inverted one, ranking the slower head as the cheaper. Every
+    point is annotated with its serial decode depth.
     """
     import matplotlib.pyplot as plt
 
@@ -1296,7 +1297,7 @@ def plot_quality_compute_tradeoff(
     decode_steps = decode_steps or {
         "factorized": 1,
         "parallel": 1,
-        "autoregressive": 96,
+        "autoregressive": 16,
     }
     if latency:
         cost = {

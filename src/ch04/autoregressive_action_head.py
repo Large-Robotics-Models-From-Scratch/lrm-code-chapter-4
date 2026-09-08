@@ -67,6 +67,16 @@ class AutoregressiveActionHead(nn.Module):
         nn.init.normal_(self.action_decoder.weight, std=0.02)
         nn.init.zeros_(self.action_decoder.bias)
 
+    @property
+    def serial_steps(self) -> int:
+        """Dependent decode steps at inference: one per timestep.
+
+        Read this rather than ``grid``. ``grid`` counts target cells
+        (``H * D``) and stopped being the suffix length when the head moved
+        to timestep tokens.
+        """
+        return self.horizon
+
     def _grid_targets(self, target_bins: torch.Tensor) -> torch.Tensor:
         """Normalize ``[B, H, D]`` or flattened ``[B, H*D]`` targets."""
         if target_bins.ndim == 2:
