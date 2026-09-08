@@ -206,8 +206,10 @@ def neighborhood_mode_recovery_figure(
 ):
     """Figure 4.8 from :func:`collect_cell_softmaxes` output.
 
-    The caption records the checkpoint, anchor index, neighbour count, and
-    seed, which section 4.6.1 requires alongside any reported result.
+    The nearest-neighbour result begins with the anchor itself, so the
+    lower panel is one conditional softmax rather than an average over
+    observations. The caption records the checkpoint, anchor index,
+    neighbour count, and seed.
     """
     neighbors = nearest_state_neighbors(
         collected["states"], anchor_index, n_neighbors
@@ -224,6 +226,7 @@ def neighborhood_mode_recovery_figure(
     )
     caption += (
         "; similarity=robot joint state; policy sees cameras+text+state"
+        "; comparison=nearby demonstrations vs one anchor softmax"
     )
     return plot_neighborhood_mode_recovery(
         collected["probabilities"][neighbors],

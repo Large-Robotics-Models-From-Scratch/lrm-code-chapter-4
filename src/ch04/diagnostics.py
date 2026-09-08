@@ -423,9 +423,8 @@ def plot_neighborhood_mode_recovery(
     action_label: str = "selected control",
     timestep: int | None = None,
 ):
-    """Figure 4.8: policy distributions and mode-selection agreement."""
+    """Compare demonstrated modes with one conditional policy output."""
     import matplotlib.pyplot as plt
-    from matplotlib.colors import to_rgb
 
     probs = np.asarray(probabilities, dtype=np.float32)
     targets = np.asarray(target_bins).reshape(-1)
@@ -436,8 +435,6 @@ def plot_neighborhood_mode_recovery(
     bin_count = n_bins or probs.shape[1]
     if bin_count != probs.shape[1]:
         raise ValueError("n_bins must match the probability width")
-    predictions = probs.argmax(axis=1)
-
     ordered_targets = np.sort(targets.astype(float))
     minimum_group = max(2, int(np.ceil(0.2 * len(ordered_targets))))
     eligible = np.arange(
@@ -460,119 +457,105 @@ def plot_neighborhood_mode_recovery(
         mode_peaks = (split_value, split_value)
 
     expert_high = targets >= split_value
-    policy_high = predictions >= split_value
     if expert_high.all() or (~expert_high).all():
         raise ValueError("target bins must contain two modes")
-    mode_agreement = float(np.mean(expert_high == policy_high))
+    bins = np.arange(bin_count, dtype=float)
+    # Turn the discrete nearby demonstrations into a readable empirical
+    # density. This is only a display kernel; selection and mode centres
+    # still come directly from the held-out target bins.
+    separation = max(mode_peaks[1] - mode_peaks[0], 1.0)
+    bandwidth = float(np.clip(0.04 * separation, 1.5, 5.0))
+    kernels = np.exp(
+        -0.5 * ((bins[:, None] - targets[None, :]) / bandwidth) ** 2
+    )
+    kernels /= kernels.sum(axis=0, keepdims=True)
+    demonstration_density = kernels.mean(axis=1)
 
-    figure, (distribution_axis, agreement_axis) = plt.subplots(
-        1,
-        2,
-        figsize=(9.2, 3.8),
-        gridspec_kw={"width_ratios": (2.15, 1.0)},
+    # nearest_state_neighbors returns the anchor first (distance zero), so
+    # the first row is one distribution, not an average over frames.
+    anchor_distribution = probs[0]
+    figure, (demonstration_axis, policy_axis) = plt.subplots(
+        2, 1, figsize=(8.8, 5.4), sharex=True
     )
-    bins = np.arange(bin_count)
-    mode_colors = (EXPERT_COLOR, POLICY_COLOR)
-    mode_masks = (~expert_high, expert_high)
-    group_names = ("smaller", "larger")
-    for mask, name, color, peak in zip(
-        mode_masks, group_names, mode_colors, mode_peaks, strict=True
-    ):
-        group = probs[mask]
-        average = group.mean(axis=0)
-        lower, upper = np.quantile(group, (0.25, 0.75), axis=0)
-        distribution_axis.fill_between(
-            bins, lower, upper, color=color, alpha=0.14, linewidth=0
-        )
-        distribution_axis.plot(
-            bins,
-            average,
-            color=color,
-            lw=2.0,
-            label=f"{name}-action examples (n={int(mask.sum())})",
-        )
-        distribution_axis.axvline(
-            peak, color=color, ls=":", lw=1.2, alpha=0.9
-        )
-        near_right_edge = peak > 0.75 * (bin_count - 1)
-        distribution_axis.annotate(
-            f"typical demonstrated\n{name} action",
-            xy=(peak, average[int(np.clip(round(peak), 0, bin_count - 1))]),
-            xytext=(-6 if near_right_edge else 0, 10),
-            textcoords="offset points",
-            ha="right" if near_right_edge else "center",
-            va="bottom",
-            fontsize=8,
-            color=color,
-        )
-    distribution_axis.set(
-        xlabel=f"{action_label} action bin (0-{bin_count - 1})",
-        ylabel="average predicted probability",
-        xlim=(-0.5, bin_count - 0.5),
-        title="Prediction for each demonstrated action group",
+    demonstration_axis.fill_between(
+        bins, demonstration_density, color=EXPERT_COLOR, alpha=0.18
     )
-    distribution_axis.legend(loc="upper left", frameon=False)
-
-    counts = np.zeros((2, 2), dtype=int)
-    np.add.at(
-        counts,
-        (expert_high.astype(int), policy_high.astype(int)),
-        1,
+    demonstration_axis.plot(
+        bins,
+        demonstration_density,
+        color=EXPERT_COLOR,
+        lw=2.2,
+        label=f"nearby demonstrations (n={len(targets)})",
     )
-    row_totals = counts.sum(axis=1, keepdims=True)
-    fractions = np.divide(
-        counts,
-        row_totals,
-        out=np.zeros_like(counts, dtype=float),
-        where=row_totals > 0,
-    )
-    background = np.asarray(to_rgb("#F4F5F7"))
-    cell_colors = np.empty((2, 2, 3), dtype=float)
-    for row in range(2):
-        for column in range(2):
-            base = SUPPORTED_COLOR if row == column else UNSUPPORTED_COLOR
-            strength = 0.0 if counts[row, column] == 0 else (
-                0.18 + 0.72 * fractions[row, column]
-            )
-            cell_colors[row, column] = (
-                (1.0 - strength) * background
-                + strength * np.asarray(to_rgb(base))
-            )
-    agreement_axis.imshow(cell_colors)
-    for row in range(2):
-        for column in range(2):
-            value = fractions[row, column]
-            outcome = "correct" if row == column else "switched"
-            agreement_axis.text(
-                column,
-                row,
-                f"{counts[row, column]} {outcome}\n{value:.0%}",
-                ha="center",
-                va="center",
-                fontsize=11,
-                fontweight="bold" if row == column else "normal",
-                color="white" if value > 0.55 else NEUTRAL_COLOR,
-            )
-    agreement_axis.set(
-        xticks=(0, 1),
-        xticklabels=("smaller\naction", "larger\naction"),
-        yticks=(0, 1),
-        yticklabels=("smaller\naction", "larger\naction"),
-        xlabel="policy prediction",
-        ylabel="demonstration",
-        title=(
-            f"Same choice: {int((expert_high == policy_high).sum())}/"
-            f"{len(targets)} ({mode_agreement:.1%})"
+    demonstration_axis.scatter(
+        targets,
+        np.full_like(
+            targets,
+            -0.035 * demonstration_density.max(),
+            dtype=float,
         ),
+        marker="|",
+        s=48,
+        color=EXPERT_COLOR,
+        alpha=0.55,
+        clip_on=False,
     )
-    context = action_label
+    demonstration_axis.set(
+        ylabel="example density",
+        title="Nearby demonstrations contain two action modes",
+        xlim=(-0.5, bin_count - 0.5),
+    )
+    demonstration_axis.legend(loc="upper left", frameon=False)
+
+    policy_axis.fill_between(
+        bins, anchor_distribution, color=POLICY_COLOR, alpha=0.18
+    )
+    policy_axis.plot(
+        bins,
+        anchor_distribution,
+        color=POLICY_COLOR,
+        lw=2.2,
+        label="policy softmax at anchor",
+    )
+    axis_context = action_label
     if timestep is not None:
-        context += f" at prediction step {timestep}"
+        axis_context += f", prediction step {timestep}"
+    policy_axis.set(
+        xlabel=f"{axis_context} action bin (0-{bin_count - 1})",
+        ylabel="policy probability",
+        title="Policy distribution for one fixed observation",
+        xlim=(-0.5, bin_count - 0.5),
+    )
+    policy_axis.legend(loc="upper left", frameon=False)
+
+    for mode_number, (peak, color) in enumerate(
+        zip(mode_peaks, (EXPERT_COLOR, SUPPORTED_COLOR), strict=True),
+        start=1,
+    ):
+        for axis in (demonstration_axis, policy_axis):
+            axis.axvline(peak, color=color, ls=":", lw=1.4, alpha=0.9)
+        near_right_edge = peak > 0.75 * (bin_count - 1)
+        demonstration_axis.annotate(
+            f"Mode {mode_number}",
+            xy=(
+                peak,
+                demonstration_density[
+                    int(np.clip(round(peak), 0, bin_count - 1))
+                ],
+            ),
+            xytext=(-5 if near_right_edge else 5, 8),
+            textcoords="offset points",
+            ha="right" if near_right_edge else "left",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+            color=color,
+        )
     figure.suptitle(
-        f"Two demonstrated action choices for {context}",
+        "Can one policy output represent both action modes?",
         fontweight="bold",
     )
-    figure.tight_layout(rect=(0, 0.04, 1, 0.94))
+    figure.tight_layout(rect=(0, 0.04, 1, 0.91))
     if caption:
         annotate_source(figure, caption)
     return figure

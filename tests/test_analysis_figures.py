@@ -96,10 +96,11 @@ def test_coupled_pair_selector_uses_held_out_targets_only():
     assert selected["score"] > 0.9
 
 
-def test_neighborhood_mode_recovery_compares_the_same_rows():
-    probabilities = np.full((8, 16), 1 / 16, dtype=np.float32)
-    probabilities[:4, 2] = 0.8
-    probabilities[4:, 13] = 0.8
+def test_neighborhood_mode_recovery_compares_modes_to_one_anchor_softmax():
+    probabilities = np.full((8, 16), 0.01, dtype=np.float32)
+    probabilities[0, 2] = 0.41
+    probabilities[0, 13] = 0.45
+    probabilities /= probabilities.sum(axis=1, keepdims=True)
     targets = np.array([2] * 4 + [13] * 4)
     figure = plot_neighborhood_mode_recovery(
         probabilities,
@@ -108,21 +109,25 @@ def test_neighborhood_mode_recovery_compares_the_same_rows():
         action_label="wrist roll",
         timestep=3,
     )
-    distribution_axis, agreement_axis = figure.axes
-    assert "demonstrated action group" in distribution_axis.get_title()
-    assert "wrist roll action bin" in distribution_axis.get_xlabel()
-    assert distribution_axis.get_ylabel() == "average predicted probability"
-    assert "Same choice: 8/8 (100.0%)" in agreement_axis.get_title()
-    assert agreement_axis.get_xlabel() == "policy prediction"
-    assert agreement_axis.get_ylabel() == "demonstration"
-    assert "wrist roll at prediction step 3" in figure._suptitle.get_text()
+    demonstration_axis, policy_axis = figure.axes
+    assert "two action modes" in demonstration_axis.get_title()
+    assert "one fixed observation" in policy_axis.get_title()
+    assert demonstration_axis.get_ylabel() == "example density"
+    assert policy_axis.get_ylabel() == "policy probability"
+    assert "both action modes" in figure._suptitle.get_text()
+    assert "wrist roll, prediction step 3" in policy_axis.get_xlabel()
     # Provenance moves to a figure footnote so it cannot stretch the axes.
     assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
-    labels = distribution_axis.get_legend_handles_labels()[1]
-    assert labels == [
-        "smaller-action examples (n=4)",
-        "larger-action examples (n=4)",
-    ]
+    labels = policy_axis.get_legend_handles_labels()[1]
+    assert labels == ["policy softmax at anchor"]
+    policy_line = next(
+        line for line in policy_axis.lines
+        if line.get_label() == "policy softmax at anchor"
+    )
+    np.testing.assert_allclose(policy_line.get_ydata(), probabilities[0])
+    assert {text.get_text() for text in demonstration_axis.texts} >= {
+        "Mode 1", "Mode 2"
+    }
     plt.close(figure)
     with pytest.raises(ValueError, match="one target bin"):
         plot_neighborhood_mode_recovery(probabilities, targets[:2])
