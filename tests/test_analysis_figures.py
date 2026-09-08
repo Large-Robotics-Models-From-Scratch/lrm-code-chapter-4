@@ -102,19 +102,27 @@ def test_neighborhood_mode_recovery_compares_the_same_rows():
     probabilities[4:, 13] = 0.8
     targets = np.array([2] * 4 + [13] * 4)
     figure = plot_neighborhood_mode_recovery(
-        probabilities, targets, caption="ckpt=x seed=0"
+        probabilities,
+        targets,
+        caption="ckpt=x seed=0",
+        action_label="wrist roll",
+        timestep=3,
     )
     distribution_axis, agreement_axis = figure.axes
-    assert "Probability moves" in distribution_axis.get_title()
-    assert "action bin" in distribution_axis.get_xlabel()
-    assert distribution_axis.get_ylabel() == "mean policy probability"
-    assert "Mode agreement: 100.0%" in agreement_axis.get_title()
-    assert agreement_axis.get_xlabel() == "policy-selected mode"
-    assert agreement_axis.get_ylabel() == "expert mode"
+    assert "demonstrated action group" in distribution_axis.get_title()
+    assert "wrist roll action bin" in distribution_axis.get_xlabel()
+    assert distribution_axis.get_ylabel() == "average predicted probability"
+    assert "Same choice: 8/8 (100.0%)" in agreement_axis.get_title()
+    assert agreement_axis.get_xlabel() == "policy prediction"
+    assert agreement_axis.get_ylabel() == "demonstration"
+    assert "wrist roll at prediction step 3" in figure._suptitle.get_text()
     # Provenance moves to a figure footnote so it cannot stretch the axes.
     assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
     labels = distribution_axis.get_legend_handles_labels()[1]
-    assert labels == ["low expert mode (n=4)", "high expert mode (n=4)"]
+    assert labels == [
+        "smaller-action examples (n=4)",
+        "larger-action examples (n=4)",
+    ]
     plt.close(figure)
     with pytest.raises(ValueError, match="one target bin"):
         plot_neighborhood_mode_recovery(probabilities, targets[:2])

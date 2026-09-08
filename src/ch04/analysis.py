@@ -201,6 +201,8 @@ def neighborhood_mode_recovery_figure(
     n_neighbors: int = 32,
     checkpoint: str = "unspecified",
     seed: int = 0,
+    action_label: str = "selected control",
+    timestep: int | None = None,
 ):
     """Figure 4.8 from :func:`collect_cell_softmaxes` output.
 
@@ -221,12 +223,14 @@ def neighborhood_mode_recovery_figure(
         f"neighbors={n_neighbors} seed={seed}"
     )
     caption += (
-        "; neighborhood=proprioception, policy input=full observation"
+        "; similarity=robot joint state; policy sees cameras+text+state"
     )
     return plot_neighborhood_mode_recovery(
         collected["probabilities"][neighbors],
         collected["target_bins"][neighbors],
         caption=caption,
+        action_label=action_label,
+        timestep=timestep,
     )
 
 

@@ -420,6 +420,8 @@ def plot_neighborhood_mode_recovery(
     target_bins: np.ndarray,
     n_bins: int | None = None,
     caption: str | None = None,
+    action_label: str = "selected control",
+    timestep: int | None = None,
 ):
     """Figure 4.8: policy distributions and mode-selection agreement."""
     import matplotlib.pyplot as plt
@@ -472,9 +474,9 @@ def plot_neighborhood_mode_recovery(
     bins = np.arange(bin_count)
     mode_colors = (EXPERT_COLOR, POLICY_COLOR)
     mode_masks = (~expert_high, expert_high)
-    mode_names = ("low", "high")
+    group_names = ("smaller", "larger")
     for mask, name, color, peak in zip(
-        mode_masks, mode_names, mode_colors, mode_peaks, strict=True
+        mode_masks, group_names, mode_colors, mode_peaks, strict=True
     ):
         group = probs[mask]
         average = group.mean(axis=0)
@@ -487,14 +489,14 @@ def plot_neighborhood_mode_recovery(
             average,
             color=color,
             lw=2.0,
-            label=f"{name} expert mode (n={int(mask.sum())})",
+            label=f"{name}-action examples (n={int(mask.sum())})",
         )
         distribution_axis.axvline(
             peak, color=color, ls=":", lw=1.2, alpha=0.9
         )
         near_right_edge = peak > 0.75 * (bin_count - 1)
         distribution_axis.annotate(
-            f"expert {name}\nmode",
+            f"typical demonstrated\n{name} action",
             xy=(peak, average[int(np.clip(round(peak), 0, bin_count - 1))]),
             xytext=(-6 if near_right_edge else 0, 10),
             textcoords="offset points",
@@ -504,10 +506,10 @@ def plot_neighborhood_mode_recovery(
             color=color,
         )
     distribution_axis.set(
-        xlabel=f"action bin (0-{bin_count - 1})",
-        ylabel="mean policy probability",
+        xlabel=f"{action_label} action bin (0-{bin_count - 1})",
+        ylabel="average predicted probability",
         xlim=(-0.5, bin_count - 0.5),
-        title="Probability moves with the expert mode",
+        title="Prediction for each demonstrated action group",
     )
     distribution_axis.legend(loc="upper left", frameon=False)
 
@@ -540,10 +542,11 @@ def plot_neighborhood_mode_recovery(
     for row in range(2):
         for column in range(2):
             value = fractions[row, column]
+            outcome = "correct" if row == column else "switched"
             agreement_axis.text(
                 column,
                 row,
-                f"{counts[row, column]}\n{value:.0%}",
+                f"{counts[row, column]} {outcome}\n{value:.0%}",
                 ha="center",
                 va="center",
                 fontsize=11,
@@ -552,15 +555,21 @@ def plot_neighborhood_mode_recovery(
             )
     agreement_axis.set(
         xticks=(0, 1),
-        xticklabels=("low", "high"),
+        xticklabels=("smaller\naction", "larger\naction"),
         yticks=(0, 1),
-        yticklabels=("low", "high"),
-        xlabel="policy-selected mode",
-        ylabel="expert mode",
-        title=f"Mode agreement: {mode_agreement:.1%}",
+        yticklabels=("smaller\naction", "larger\naction"),
+        xlabel="policy prediction",
+        ylabel="demonstration",
+        title=(
+            f"Same choice: {int((expert_high == policy_high).sum())}/"
+            f"{len(targets)} ({mode_agreement:.1%})"
+        ),
     )
+    context = action_label
+    if timestep is not None:
+        context += f" at prediction step {timestep}"
     figure.suptitle(
-        "Policy mode recovery across nearby held-out frames",
+        f"Two demonstrated action choices for {context}",
         fontweight="bold",
     )
     figure.tight_layout(rect=(0, 0.04, 1, 0.94))

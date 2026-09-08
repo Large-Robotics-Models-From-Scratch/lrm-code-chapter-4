@@ -131,6 +131,7 @@ def generate_all(
         plot_open_loop_episode,
     )
     from ch04.execution import execution_schedules
+    from ch04.so101 import SO101_ACTION_NAMES
 
     def announce(message: str) -> None:
         if verbose:
@@ -187,6 +188,10 @@ def generate_all(
                 n_neighbors=n_neighbors,
                 checkpoint=str(checkpoint_path),
                 seed=seed,
+                action_label=SO101_ACTION_NAMES[dims[0]].replace(
+                    ".pos", ""
+                ),
+                timestep=timestep,
             ),
             output / "figure_4_8_neighborhood_softmax.png",
         )
