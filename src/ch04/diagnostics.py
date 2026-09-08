@@ -474,88 +474,56 @@ def plot_neighborhood_mode_recovery(
     # nearest_state_neighbors returns the anchor first (distance zero), so
     # the first row is one distribution, not an average over frames.
     anchor_distribution = probs[0]
-    figure, (demonstration_axis, policy_axis) = plt.subplots(
-        2, 1, figsize=(8.8, 5.4), sharex=True
-    )
-    demonstration_axis.fill_between(
+    figure, axis = plt.subplots(figsize=(8.8, 4.2))
+    axis.fill_between(
         bins, demonstration_density, color=EXPERT_COLOR, alpha=0.18
     )
-    demonstration_axis.plot(
+    axis.plot(
         bins,
         demonstration_density,
         color=EXPERT_COLOR,
         lw=2.2,
-        label=f"nearby demonstrations (n={len(targets)})",
+        label="expert demonstrations",
     )
-    demonstration_axis.scatter(
-        targets,
-        np.full_like(
-            targets,
-            -0.035 * demonstration_density.max(),
-            dtype=float,
-        ),
-        marker="|",
-        s=48,
-        color=EXPERT_COLOR,
-        alpha=0.55,
-        clip_on=False,
-    )
-    demonstration_axis.set(
-        ylabel="example density",
-        title="Nearby demonstrations contain two action modes",
-        xlim=(-0.5, bin_count - 0.5),
-    )
-    demonstration_axis.legend(loc="upper left", frameon=False)
-
-    policy_axis.fill_between(
+    axis.fill_between(
         bins, anchor_distribution, color=POLICY_COLOR, alpha=0.18
     )
-    policy_axis.plot(
+    axis.plot(
         bins,
         anchor_distribution,
         color=POLICY_COLOR,
         lw=2.2,
-        label="policy softmax at anchor",
+        label="policy prediction",
     )
     axis_context = action_label
     if timestep is not None:
         axis_context += f", prediction step {timestep}"
-    policy_axis.set(
+    axis.set(
         xlabel=f"{axis_context} action bin (0-{bin_count - 1})",
-        ylabel="policy probability",
-        title="Policy distribution for one fixed observation",
+        ylabel="probability per action bin",
+        title="Does the policy capture both modes?",
         xlim=(-0.5, bin_count - 0.5),
     )
-    policy_axis.legend(loc="upper left", frameon=False)
+    axis.legend(loc="upper left", frameon=False)
 
-    for mode_number, (peak, color) in enumerate(
-        zip(mode_peaks, (EXPERT_COLOR, SUPPORTED_COLOR), strict=True),
-        start=1,
-    ):
-        for axis in (demonstration_axis, policy_axis):
-            axis.axvline(peak, color=color, ls=":", lw=1.4, alpha=0.9)
+    peak_height = max(
+        demonstration_density.max(), anchor_distribution.max()
+    )
+    for mode_number, peak in enumerate(mode_peaks, start=1):
+        axis.axvline(peak, color=NEUTRAL_COLOR, ls=":", lw=1.3, alpha=0.7)
         near_right_edge = peak > 0.75 * (bin_count - 1)
-        demonstration_axis.annotate(
+        axis.annotate(
             f"Mode {mode_number}",
-            xy=(
-                peak,
-                demonstration_density[
-                    int(np.clip(round(peak), 0, bin_count - 1))
-                ],
-            ),
+            xy=(peak, peak_height),
             xytext=(-5 if near_right_edge else 5, 8),
             textcoords="offset points",
             ha="right" if near_right_edge else "left",
             va="bottom",
             fontsize=9,
             fontweight="bold",
-            color=color,
+            color=NEUTRAL_COLOR,
         )
-    figure.suptitle(
-        "Can one policy output represent both action modes?",
-        fontweight="bold",
-    )
-    figure.tight_layout(rect=(0, 0.04, 1, 0.91))
+    figure.tight_layout(rect=(0, 0.04, 1, 1))
     if caption:
         annotate_source(figure, caption)
     return figure

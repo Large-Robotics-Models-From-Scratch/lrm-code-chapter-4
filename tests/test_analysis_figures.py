@@ -109,23 +109,22 @@ def test_neighborhood_mode_recovery_compares_modes_to_one_anchor_softmax():
         action_label="wrist roll",
         timestep=3,
     )
-    demonstration_axis, policy_axis = figure.axes
-    assert "two action modes" in demonstration_axis.get_title()
-    assert "one fixed observation" in policy_axis.get_title()
-    assert demonstration_axis.get_ylabel() == "example density"
-    assert policy_axis.get_ylabel() == "policy probability"
-    assert "both action modes" in figure._suptitle.get_text()
-    assert "wrist roll, prediction step 3" in policy_axis.get_xlabel()
+    assert len(figure.axes) == 1
+    axis = figure.axes[0]
+    assert "both modes" in axis.get_title()
+    assert axis.get_ylabel() == "probability per action bin"
+    assert "wrist roll, prediction step 3" in axis.get_xlabel()
     # Provenance moves to a figure footnote so it cannot stretch the axes.
     assert any("ckpt=x seed=0" in text.get_text() for text in figure.texts)
-    labels = policy_axis.get_legend_handles_labels()[1]
-    assert labels == ["policy softmax at anchor"]
+    labels = axis.get_legend_handles_labels()[1]
+    assert labels == ["expert demonstrations", "policy prediction"]
+    assert all("n=" not in label for label in labels)
     policy_line = next(
-        line for line in policy_axis.lines
-        if line.get_label() == "policy softmax at anchor"
+        line for line in axis.lines
+        if line.get_label() == "policy prediction"
     )
     np.testing.assert_allclose(policy_line.get_ydata(), probabilities[0])
-    assert {text.get_text() for text in demonstration_axis.texts} >= {
+    assert {text.get_text() for text in axis.texts} >= {
         "Mode 1", "Mode 2"
     }
     plt.close(figure)
@@ -412,8 +411,10 @@ def test_neighborhood_figure_caption_records_the_provenance():
         seed=11,
     )
     footnote = " ".join(text.get_text() for text in figure.texts)
-    for token in ("best.pt", "anchor=3", "neighbors=5", "seed=11"):
+    for token in ("best.pt", "seed=11"):
         assert token in footnote, token
+    assert "anchor=" not in footnote
+    assert "neighbors=" not in footnote
     plt.close(figure)
 
 
