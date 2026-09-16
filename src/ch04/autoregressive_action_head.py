@@ -162,7 +162,7 @@ class AutoregressiveActionHead(nn.Module):
             cache_position = torch.arange(
                 prefix_length, device=prefix.device
             )
-            outputs = self.backbone.language_backbone(
+            outputs = self.backbone.fusion_transformer(
                 inputs_embeds=prefix,
                 attention_mask=attention_mask,
                 position_ids=prefix_positions,
@@ -203,7 +203,7 @@ class AutoregressiveActionHead(nn.Module):
                     device=prefix.device,
                 )
                 next_position = prefix_positions[:, -1:] + position + 1
-                outputs = self.backbone.language_backbone(
+                outputs = self.backbone.fusion_transformer(
                     inputs_embeds=next_embedding.to(prefix.dtype),
                     attention_mask=attention_mask,
                     position_ids=next_position,

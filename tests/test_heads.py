@@ -51,7 +51,7 @@ def test_parallel_positions_ignore_text_padding(fake_backbone):
         [[True, False, False], [True, True, True]]
     )
     head(images, ids, torch.rand(2, 6), text_valid)
-    positions = fake_backbone.language_backbone.last_position_ids
+    positions = fake_backbone.fusion_transformer.last_position_ids
     assert positions[0, :8].tolist() == [0, 1, 2, 3, 4, 0, 0, 5]
     assert positions[1, :8].tolist() == list(range(8))
     assert positions[0, 8] == 6
@@ -131,5 +131,5 @@ def test_ar_uses_separate_action_embedding_table(fake_backbone):
     assert head.action_embeddings.num_embeddings == 128
     assert (
         head.action_embeddings
-        is not fake_backbone.language_backbone.get_input_embeddings()
+        is not fake_backbone.fusion_transformer.get_input_embeddings()
     )

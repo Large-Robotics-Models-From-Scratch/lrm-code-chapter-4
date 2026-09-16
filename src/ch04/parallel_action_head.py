@@ -26,7 +26,7 @@ class ParallelDecodeActionHead(nn.Module):
         super().__init__()
         self.backbone = backbone
         set_attention = getattr(
-            backbone.language_backbone,
+            backbone.fusion_transformer,
             "set_attn_implementation",
             None,
         )
