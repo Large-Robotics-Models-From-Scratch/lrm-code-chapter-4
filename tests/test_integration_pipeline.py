@@ -13,7 +13,7 @@ def test_real_backbone_parallel_head_contract():
     from ch04.train import make_optimizer
 
     backbone = VLABackbone().eval()
-    backbone.language_backbone.set_attn_implementation("eager")
+    backbone.fusion_transformer.set_attn_implementation("eager")
     head = ParallelDecodeActionHead(backbone).eval()
     text = backbone.tokenizer(
         ["pick up the object"], padding=True, return_tensors="pt"
@@ -34,9 +34,9 @@ def test_real_backbone_parallel_head_contract():
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
 
-    assert backbone.language_backbone.config.vocab_size == 49_152
+    assert backbone.fusion_transformer.config.vocab_size == 49_152
     assert (
-        backbone.language_backbone.get_input_embeddings().num_embeddings
+        backbone.fusion_transformer.get_input_embeddings().num_embeddings
         == 49_152
     )
 
@@ -157,7 +157,7 @@ def test_every_head_trains_end_to_end_on_the_real_backbone(head_name):
         -5 * np.ones(6, dtype=np.float32),
         5 * np.ones(6, dtype=np.float32),
     )
-    trunk = backbone.language_backbone.layers[0].mlp.up_proj
+    trunk = backbone.fusion_transformer.layers[0].mlp.up_proj
     before = trunk.weight.detach().float().clone()
 
     history = train_action_head(
