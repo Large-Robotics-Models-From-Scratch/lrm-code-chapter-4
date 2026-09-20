@@ -44,7 +44,7 @@ class ParallelDecodeActionHead(nn.Module):
             raise ValueError("n_bins must be an integer greater than one")
         self.backbone = backbone
         set_attention = getattr(
-            backbone.language_backbone,
+            backbone.fusion_transformer,
             "set_attn_implementation",
             None,
         )

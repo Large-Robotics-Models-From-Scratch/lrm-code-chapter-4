@@ -137,7 +137,7 @@ def test_ar_appends_one_position_per_timestep(fake_backbone, model_inputs):
     logits = head.teacher_forced_logits(*model_inputs, targets)
 
     assert logits.shape == (2, 4, 3, 256)
-    positions = fake_backbone.language_backbone.last_position_ids
+    positions = fake_backbone.fusion_transformer.last_position_ids
     prefix = _prefix_length(head, model_inputs)
     assert positions.shape[1] == prefix + head.horizon - 1
 
@@ -150,7 +150,7 @@ def test_ar_generation_costs_one_serial_step_per_timestep(
         fake_backbone, d_embed=12, horizon=4, action_dim=3
     ).eval()
     calls = []
-    handle = fake_backbone.language_backbone.register_forward_pre_hook(
+    handle = fake_backbone.fusion_transformer.register_forward_pre_hook(
         lambda *_: calls.append(1)
     )
     try:

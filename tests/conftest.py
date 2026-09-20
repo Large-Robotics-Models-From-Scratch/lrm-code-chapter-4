@@ -179,7 +179,7 @@ class FakeBackbone(nn.Module):
         self.width = width
         self.vision_encoder = FakeVisionEncoder(width)
         self.state_encoder = FakeStateEncoder(width)
-        self.language_backbone = FakeLanguageBackbone(width)
+        self.fusion_transformer = FakeLanguageBackbone(width)
         self.tokenizer = FakeTokenizer()
 
     def embed_inputs(
@@ -189,7 +189,7 @@ class FakeBackbone(nn.Module):
         image = self.vision_encoder(images.flatten(0, 1)).reshape(
             batch_size, 4, self.width
         )
-        text = self.language_backbone.get_input_embeddings()(input_ids)
+        text = self.fusion_transformer.get_input_embeddings()(input_ids)
         state_embedding = self.state_encoder(state)
         embeddings = torch.cat([image, text, state_embedding], dim=1)
         if text_attention_mask is None:
@@ -211,7 +211,7 @@ class FakeBackbone(nn.Module):
         return embeddings, valid, positions
 
     def contextualize(self, embeddings, attention_mask, position_ids):
-        return self.language_backbone(
+        return self.fusion_transformer(
             inputs_embeds=embeddings,
             attention_mask=attention_mask,
             position_ids=position_ids,

@@ -44,7 +44,7 @@ def resolve_device(name: str | None = None) -> torch.device:
 def backbone_width(backbone, default: int = SMOLLM_WIDTH) -> int:
     """Read the language backbone's hidden width, falling back to 576."""
     config = getattr(
-        getattr(backbone, "language_backbone", None), "config", None
+        getattr(backbone, "fusion_transformer", None), "config", None
     )
     return int(getattr(config, "hidden_size", default))
 
